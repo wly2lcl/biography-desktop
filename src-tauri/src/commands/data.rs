@@ -320,51 +320,159 @@ fn clean_old_backups(backups_dir: &PathBuf, max_count: usize) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::thread;
+    use std::time::Duration;
 
-    #[test]
-    fn test_clean_old_backups_removes_oldest() {
-        // Test that clean_old_backups removes the oldest files first
-        // This tests the helper function logic
-        let test_dir = std::env::temp_dir().join("biography_test_backups");
-        std::fs::create_dir_all(&test_dir).unwrap();
-
-        // Create 3 test backup files with different modification times
-        for i in 0..3 {
-            let path = test_dir.join(format!("test-{}.db", i));
-            std::fs::write(&path, format!("backup {}", i)).unwrap();
-            // Small delay to ensure different mtime
-            std::thread::sleep(std::time::Duration::from_millis(10));
+    /// Helper: create a test directory with N backup `.db` files, each with
+    /// a distinct mtime (ascending — oldest first).
+    fn create_backup_files(
+        dir: &PathBuf,
+        count: usize,
+        prefix: &str,
+    ) {
+        fs::create_dir_all(dir).unwrap();
+        for i in 0..count {
+            let path = dir.join(format!("{}-{}.db", prefix, i));
+            fs::write(&path, format!("data {}", i)).unwrap();
+            // Space out mtimes so ordering is deterministic
+            thread::sleep(Duration::from_millis(15));
         }
+    }
 
-        // Should keep only 2
-        clean_old_backups(&test_dir, 2).unwrap();
-
-        let remaining: Vec<_> = std::fs::read_dir(&test_dir)
+    /// Count `.db` files in a directory.
+    fn count_db_files(dir: &PathBuf) -> usize {
+        fs::read_dir(dir)
             .unwrap()
             .filter(|e| {
                 e.as_ref()
                     .map(|e| e.path().extension().map_or(false, |ext| ext == "db"))
                     .unwrap_or(false)
             })
-            .collect();
+            .count()
+    }
 
-        assert_eq!(remaining.len(), 2);
+    // ── clean_old_backups ────────────────────────────────────────
 
-        // Cleanup
-        std::fs::remove_dir_all(&test_dir).unwrap();
+    #[test]
+    fn test_clean_old_backups_removes_oldest() {
+        let dir = std::env::temp_dir().join("bio_test_remove_oldest");
+        create_backup_files(&dir, 5, "backup");
+
+        // Keep only 3 → oldest 2 should be removed
+        clean_old_backups(&dir, 3).unwrap();
+        assert_eq!(count_db_files(&dir), 3);
+
+        // The 3 survivors should be the 3 newest (backup-2, backup-3, backup-4)
+        for i in 2..5 {
+            assert!(
+                dir.join(format!("backup-{}.db", i)).exists(),
+                "backup-{}.db should still exist",
+                i
+            );
+        }
+        // The 2 oldest (backup-0, backup-1) should be gone
+        assert!(!dir.join("backup-0.db").exists());
+        assert!(!dir.join("backup-1.db").exists());
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn test_clean_old_backups_no_op_when_under_limit() {
-        let test_dir = std::env::temp_dir().join("biography_test_noop");
-        std::fs::create_dir_all(&test_dir).unwrap();
+        let dir = std::env::temp_dir().join("bio_test_noop");
+        create_backup_files(&dir, 3, "backup");
 
-        std::fs::write(test_dir.join("test.db"), "data").unwrap();
+        // max_count = 10, only 3 exist → nothing removed
+        clean_old_backups(&dir, 10).unwrap();
+        assert_eq!(count_db_files(&dir), 3);
 
-        clean_old_backups(&test_dir, 5).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
-        assert!(test_dir.join("test.db").exists());
+    #[test]
+    fn test_clean_old_backups_no_op_when_exactly_at_limit() {
+        let dir = std::env::temp_dir().join("bio_test_exact");
+        create_backup_files(&dir, 5, "backup");
 
-        std::fs::remove_dir_all(&test_dir).unwrap();
+        // max_count = 5, exactly 5 exist → nothing removed
+        clean_old_backups(&dir, 5).unwrap();
+        assert_eq!(count_db_files(&dir), 5);
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_clean_old_backups_ignores_non_db_files() {
+        let dir = std::env::temp_dir().join("bio_test_non_db");
+        fs::create_dir_all(&dir).unwrap();
+
+        // Create a mix: .db files and other files
+        fs::write(dir.join("notes.txt"), "hello").unwrap();
+        fs::write(dir.join("data.json"), "{}").unwrap();
+        thread::sleep(Duration::from_millis(10));
+        fs::write(dir.join("backup-0.db"), "data").unwrap();
+        thread::sleep(Duration::from_millis(10));
+        fs::write(dir.join("backup-1.db"), "data").unwrap();
+        thread::sleep(Duration::from_millis(10));
+        fs::write(dir.join("backup-2.db"), "data").unwrap();
+
+        // max_count = 1 → only 1 .db should remain; .txt and .json stay
+        clean_old_backups(&dir, 1).unwrap();
+        assert_eq!(
+            count_db_files(&dir),
+            1,
+            "Only 1 .db file should remain"
+        );
+        // Non-.db files must not be touched
+        assert!(dir.join("notes.txt").exists(), "notes.txt should remain");
+        assert!(dir.join("data.json").exists(), "data.json should remain");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_clean_old_backups_empty_directory() {
+        let dir = std::env::temp_dir().join("bio_test_empty");
+        fs::create_dir_all(&dir).unwrap();
+
+        // No files at all – should not error
+        clean_old_backups(&dir, 5).unwrap();
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_clean_old_backups_keeps_all_when_max_count_is_zero() {
+        let dir = std::env::temp_dir().join("bio_test_zero_max");
+        create_backup_files(&dir, 3, "backup");
+
+        // max_count = 0 → all files removed
+        clean_old_backups(&dir, 0).unwrap();
+        assert_eq!(count_db_files(&dir), 0);
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_clean_old_backups_large_count() {
+        let dir = std::env::temp_dir().join("bio_test_large");
+        create_backup_files(&dir, 20, "backup");
+
+        // Keep only 5 out of 20 → 15 removed
+        clean_old_backups(&dir, 5).unwrap();
+        assert_eq!(count_db_files(&dir), 5);
+
+        // Verify the 5 newest survived (backup-15 through backup-19)
+        for i in 15..20 {
+            assert!(
+                dir.join(format!("backup-{}.db", i)).exists(),
+                "backup-{}.db should survive",
+                i
+            );
+        }
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

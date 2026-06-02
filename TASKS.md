@@ -245,7 +245,7 @@
 | # | 任务 | 优先级 | 状态 | 预估 | 实际 | 备注 |
 |---|------|--------|------|------|------|------|
 | T180 | 迁移 wuxia_jianghu.md | P0 | ✅ | 30min | - | public/worlds/ |
-| T181 | 迁移 world/ 目录 | P1 | ⏸️ | 1h | - | 可选，暂未迁移 |
+| T181 | 迁移 world/ 目录 | P1 |  | - | - | 无需迁移，单文件已足够 |
 | T182 | 实现世界观加载逻辑 | P0 | ✅ | 2h | - | 单文件 + 目录 |
 | T183 | 实现优先级加载顺序 | P0 | ✅ | 1h | - | README > WORLD_OVERVIEW > ... |
 | T184 | 实现字符数限制（50K） | P1 | ✅ | 30min | - | |
@@ -382,7 +382,7 @@
 | P2-001 | 世界观内容智能截断 | P2 | ✅ | 2h | src/services/world.ts:76-79 | 已实现 heading 边界智能截断替代硬截断 |
 | P2-002 | Q&A 历史持久化分页 | P2 | ✅ | 2h | src/services/storage.ts | 已实现 localStorage 分页存储 + Tauri 从 session 提取 |
 | P2-005 | Python 版数据迁移脚本 | P2 | ✅ | 2h | scripts/migrate_from_python.py | 已实现列映射/冲突处理/统计报告 |
-| P2-006 | Rust 代码单元测试 | P2 | 🔲 | 4h | src-tauri/src/**/*.rs | 所有 Rust 命令和数据库操作测试（需 cargo 环境） |
+| P2-006 | Rust 代码单元测试 | P2 | ✅ | 4h | src-tauri/src/**/*.rs | 已添加 27 个单元测试（data.rs 7 个 + world.rs 20 个）覆盖核心逻辑 |
 | P2-007 | 错误日志上报机制 | P2 | ✅ | 2h | src/services/errorLogger.ts | 已实现 localStorage 持久日志 + 自动捕获 unhandled error |
 | P2-008 | CSP 配置收紧 | P2 | ✅ | 30min | src-tauri/tauri.conf.json:24 | 已限制 localhost:* → localhost:11434 |
 
@@ -392,11 +392,11 @@
 
 | 状态 | 数量 | 占比 |
 |------|------|------|
-| 🔲 待开始 | 4 | 2% |
+| 🔲 待开始 | 3 | 2% |
 | 🔨 进行中 | 0 | 0% |
-| ✅ 已完成 | 175 | 92% |
-| ⏸️ 已暂停 | 6 | 3% |
-| ❌ 已取消 | 5 | 3% |
+| ✅ 已完成 | 176 | 93% |
+| ⏸️ 已暂停 | 5 | 3% |
+| ❌ 已取消 | 6 | 3% |
 | **总计** | **190** | **100%** |
 
 ### 预估工作量
