@@ -1,6 +1,5 @@
 // src-tauri/src/commands/world.rs - World management commands
 
-use serde_json::json;
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;

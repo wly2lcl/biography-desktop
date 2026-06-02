@@ -5,7 +5,6 @@ mod db;
 
 use sqlx::SqlitePool;
 use std::path::PathBuf;
-use tauri::Manager;
 
 struct AppDb {
     pool: SqlitePool,

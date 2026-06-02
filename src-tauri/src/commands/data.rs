@@ -3,6 +3,7 @@
 use crate::AppDb;
 use serde_json::json;
 use serde_json::Value;
+use sqlx::Row;
 use std::fs;
 use std::path::PathBuf;
 use tauri::State;
@@ -139,7 +140,7 @@ pub async fn list_backups(
 
 #[tauri::command]
 pub async fn delete_backup(
-    state: State<'_, AppDb>,
+    _state: State<'_, AppDb>,
     backup_path: String,
 ) -> Result<(), String> {
     let path = PathBuf::from(&backup_path);
