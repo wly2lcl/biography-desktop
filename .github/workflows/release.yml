@@ -30,7 +30,10 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
       - name: Install frontend dependencies
-        run: npm ci
+        run: |
+          npm cache clean --force 2>$null
+          npm config set fetch-retry-maxtimeout 120000
+          npm install --prefer-offline
       - name: Install Tauri CLI
         run: npm install -D @tauri-apps/cli
       - name: Build
@@ -59,7 +62,10 @@ jobs:
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
       - name: Install frontend dependencies
-        run: npm ci
+        run: |
+          npm cache clean --force
+          npm config set fetch-retry-maxtimeout 120000
+          npm install --prefer-offline
       - name: Install Tauri CLI
         run: npm install -D @tauri-apps/cli
       - name: Build
@@ -106,7 +112,10 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev
       - name: Install frontend dependencies
-        run: npm ci
+        run: |
+          npm cache clean --force
+          npm config set fetch-retry-maxtimeout 120000
+          npm install --prefer-offline
       - name: Install Tauri CLI
         run: npm install -D @tauri-apps/cli
       - name: Build
