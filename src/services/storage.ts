@@ -1,6 +1,6 @@
 // src/services/storage.ts - Storage abstraction (Web + Tauri)
 
-import type { GameSession } from '../types/models';
+import type { GameSession, QAMessage } from '../types/models';
 
 export interface StorageProvider {
   saveSession(session: GameSession): Promise<void>;
@@ -9,6 +9,7 @@ export interface StorageProvider {
   deleteSession(sessionId: string): Promise<boolean>;
   getConfig(key: string): Promise<string | null>;
   setConfig(key: string, value: string): Promise<void>;
+  getQaHistory(sessionId: string, page?: number, pageSize?: number): Promise<QAMessage[]>;
 }
 
 // ── Web Storage (localStorage) ─────────────────────────────────────
@@ -21,11 +22,25 @@ class WebStorage implements StorageProvider {
       `${this.prefix}session_${session.sessionId}`,
       JSON.stringify(session)
     );
+    // Persist qaHistory separately for paginated retrieval
+    localStorage.setItem(
+      `${this.prefix}qa_${session.sessionId}`,
+      JSON.stringify(session.player.qaHistory)
+    );
   }
 
   async getSession(sessionId: string): Promise<GameSession | null> {
     const raw = localStorage.getItem(`${this.prefix}session_${sessionId}`);
     return raw ? (JSON.parse(raw) as GameSession) : null;
+  }
+
+  async getQaHistory(sessionId: string, page?: number, pageSize?: number): Promise<QAMessage[]> {
+    const raw = localStorage.getItem(`${this.prefix}qa_${sessionId}`);
+    if (!raw) return [];
+    const all: QAMessage[] = JSON.parse(raw);
+    if (page === undefined || pageSize === undefined) return all;
+    const start = (page - 1) * pageSize;
+    return all.slice(start, start + pageSize);
   }
 
   async listSessions(activeOnly?: boolean): Promise<GameSession[]> {
@@ -80,6 +95,15 @@ class TauriStorage implements StorageProvider {
     return (await this.invoke('get_session', {
       sessionId,
     })) as GameSession | null;
+  }
+
+  async getQaHistory(sessionId: string, page?: number, pageSize?: number): Promise<QAMessage[]> {
+    const session = await this.getSession(sessionId);
+    if (!session) return [];
+    const all = session.player.qaHistory || [];
+    if (page === undefined || pageSize === undefined) return all;
+    const start = (page - 1) * pageSize;
+    return all.slice(start, start + pageSize);
   }
 
   async listSessions(activeOnly = false): Promise<GameSession[]> {

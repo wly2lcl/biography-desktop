@@ -315,3 +315,55 @@ fn clean_old_backups(backups_dir: &PathBuf, max_count: usize) -> Result<(), Stri
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_clean_old_backups_removes_oldest() {
+        // Test that clean_old_backups removes the oldest files first
+        // This tests the helper function logic
+        let test_dir = std::env::temp_dir().join("biography_test_backups");
+        std::fs::create_dir_all(&test_dir).unwrap();
+
+        // Create 3 test backup files with different modification times
+        for i in 0..3 {
+            let path = test_dir.join(format!("test-{}.db", i));
+            std::fs::write(&path, format!("backup {}", i)).unwrap();
+            // Small delay to ensure different mtime
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        // Should keep only 2
+        clean_old_backups(&test_dir, 2).unwrap();
+
+        let remaining: Vec<_> = std::fs::read_dir(&test_dir)
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .map(|e| e.path().extension().map_or(false, |ext| ext == "db"))
+                    .unwrap_or(false)
+            })
+            .collect();
+
+        assert_eq!(remaining.len(), 2);
+
+        // Cleanup
+        std::fs::remove_dir_all(&test_dir).unwrap();
+    }
+
+    #[test]
+    fn test_clean_old_backups_no_op_when_under_limit() {
+        let test_dir = std::env::temp_dir().join("biography_test_noop");
+        std::fs::create_dir_all(&test_dir).unwrap();
+
+        std::fs::write(test_dir.join("test.db"), "data").unwrap();
+
+        clean_old_backups(&test_dir, 5).unwrap();
+
+        assert!(test_dir.join("test.db").exists());
+
+        std::fs::remove_dir_all(&test_dir).unwrap();
+    }
+}

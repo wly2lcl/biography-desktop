@@ -18,6 +18,7 @@ import { prompts } from '../services/prompts';
 import { listWorlds, loadBuiltInWorld } from '../services/world';
 import { loadSettings, saveSettings, loadApiKey, saveApiKey, testConnection } from '../services/config';
 import { generateId, generateQaId } from '../utils/format';
+import { errorLogger } from '../services/errorLogger';
 
 type Screen = 'start' | 'system' | 'game' | 'biography';
 
@@ -341,6 +342,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         streamedText: '',
       });
     } catch (err) {
+      errorLogger.error('startBasicGame failed', { playerName: name, world }, err as Error);
       set({
         error: formatErrorMessage(err, '开始游戏失败'),
         isStreaming: false,
@@ -495,6 +497,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         // Stay on game screen, show end choice
       }
     } catch (err) {
+      errorLogger.error('makeChoice failed', { choiceId }, err as Error);
       set({
         error: formatErrorMessage(err, '处理选择失败'),
         isStreaming: false,
@@ -564,6 +567,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         streamedText: '',
       });
     } catch (err) {
+      errorLogger.error('generateBiography failed', { playerName: session.player.name }, err as Error);
       set({
         error: formatErrorMessage(err, '生成传记失败'),
         isStreaming: false,
@@ -623,6 +627,14 @@ export const useGameStore = create<GameState>((set, get) => ({
     try {
       const session = await get().storage.getSession(sessionId);
       if (session) {
+        // Load persisted Q&A history
+        try {
+          const qaHistory = await get().storage.getQaHistory(session.sessionId);
+          session.player.qaHistory = qaHistory;
+        } catch {
+          // Use in-memory history from the loaded session
+        }
+
         set({
           session,
           currentScenario: session.scenarios[session.scenarios.length - 1],
@@ -630,6 +642,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         });
       }
     } catch (err) {
+      errorLogger.error('resumeGame failed', { sessionId }, err as Error);
       set({ error: formatErrorMessage(err, '恢复游戏失败') });
     }
   },
@@ -699,6 +712,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         streamedText: '',
       });
     } catch (err) {
+      errorLogger.error('askQuestion failed', { question }, err as Error);
       set({
         error: formatErrorMessage(err, '问答失败'),
         streamedText: '',

@@ -85,6 +85,8 @@ async fn main() {
             commands::data::clear_all_sessions,
             commands::data::export_full_data,
             commands::data::import_full_data,
+            commands::prompts::read_file,
+            commands::prompts::write_file,
         ])
         .run(context)
         .expect("error while running tauri application");

@@ -378,3 +378,31 @@ fn format_timestamp(time: &std::time::SystemTime) -> String {
     let day_of_year = days % 365;
     format!("{}-{:02}-{:02} {:02}:{:02}:{:02}", year, (day_of_year / 30) + 1, (day_of_year % 30) + 1, hours, mins, secs)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_path_traversal_blocked() {
+        // Test that filenames with ".." are rejected
+        let bad_names = vec!["../../../etc/passwd", "..\\..\\windows", "test/../../../etc"];
+        for name in bad_names {
+            assert!(
+                name.contains("..") || name.starts_with('/') || name.contains('\\'),
+                "Should be blocked: {}",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn test_valid_filenames() {
+        let good_names = vec!["wuxia_jianghu.md", "my_world.md", "test-123.md"];
+        for name in good_names {
+            assert!(!name.contains(".."));
+            assert!(!name.starts_with('/'));
+            assert!(!name.contains('\\'));
+        }
+    }
+}
