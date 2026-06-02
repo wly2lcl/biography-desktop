@@ -372,7 +372,7 @@
 | P1-004 | 准备并验证应用图标 | P1 | ✅ | 1h | src-tauri/tauri.conf.json:30-35 | 图标文件已存在（32x32/128x128/icns/ico/png） |
 | P1-005 | SettingsScreen 数据管理功能实现 | P1 | ✅ | 3h | src/components/screens/SettingsScreen.tsx:499-507 | 已实现备份/清理/清理全部 Tauri IPC 调用 |
 | P1-008 | 替换原生 confirm 为 ConfirmModal | P1 | ✅ | 1h | src/components/screens/StartScreen.tsx:285 | 已使用 ConfirmModal 组件替换 |
-| P1-011 | 系统能力实质化到玩家状态 | P1 | 🔲 | 4h | src/store/gameStore.ts:418-424 | 系统 abilities 解析为 player.attributes/inventory/skills，而非仅文本设定 |
+| P1-011 | 系统能力实质化到玩家状态 | P1 | ⏸️ | 4h | src/store/gameStore.ts:418-424 | 改用 LLM 上下文传递而非关键字解析: system abilities 作为完整文本通过 `loadSystemContext` 传入 LLM，由 LLM 动态理解 |
 | P1-012 | 修复流式序章显示 undefined | P1 | ✅ | 1h | src/game/engine.ts + StreamedText.tsx | data.prologue 缺失导致 undefined 拼接 + abilities 提取定位错误 |
 
 ### 长期优化 (P2)
@@ -392,10 +392,10 @@
 
 | 状态 | 数量 | 占比 |
 |------|------|------|
-| 🔲 待开始 | 5 | 3% |
+| 🔲 待开始 | 4 | 2% |
 | 🔨 进行中 | 0 | 0% |
 | ✅ 已完成 | 175 | 92% |
-| ⏸️ 已暂停 | 5 | 3% |
+| ⏸️ 已暂停 | 6 | 3% |
 | ❌ 已取消 | 5 | 3% |
 | **总计** | **190** | **100%** |
 

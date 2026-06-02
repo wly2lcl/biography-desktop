@@ -125,7 +125,7 @@
 | P1-008 | 确认对话框使用原生 confirm | P1 | ✅ | 已使用 ConfirmModal 组件替换 | src/components/screens/StartScreen.tsx |
 | P1-009 | 摘要生成逻辑有并发风险 | P1 | ✅ | 已添加 summarizing 状态锁 | src/game/engine.ts |
 | P1-010 | 版本硬编码多处不一致 | P1 | ✅ | 已从 npm_package_version 动态注入 | package.json/vite.config.ts |
-| P1-011 | 系统能力仅作文本设定未实质化 | P1 | 🔲 | 系统 abilities 解析为 player.attributes/inventory/skills | src/store/gameStore.ts:418-424 |
+| P1-011 | 系统能力仅作文本设定未实质化 | P1 | ⏸️ | 已改为通过 LLM 上下文传递完整系统设定，由 LLM 动态理解能力而非硬编码解析 | src/game/engine.ts:loadSystemContext |
 | P1-012 | 流式序章显示 undefined | P1 | ✅ | data.prologue 缺失导致 undefined 拼接 + 多项安全防护 | engine.ts + StreamedText.tsx + gameStore.ts |
 
 ### 💡 长期优化（后续迭代处理）
