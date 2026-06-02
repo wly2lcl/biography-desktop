@@ -11,6 +11,7 @@ fn get_worlds_dir(app: &AppHandle) -> PathBuf {
     app.path().app_data_dir().unwrap().join("worlds")
 }
 
+#[allow(dead_code)]
 fn get_builtin_worlds_dir(app: &AppHandle) -> PathBuf {
     // Built-in worlds are in the resources/public/worlds directory
     // In development, this is relative to the project root

@@ -3,6 +3,7 @@
 use sqlx::SqlitePool;
 
 /// Run database migrations
+#[allow(dead_code)]
 pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // Migration 1: Add biography column if not exists
     // SQLite doesn't support IF NOT EXISTS for columns easily, so we check manually

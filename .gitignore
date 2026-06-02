@@ -31,8 +31,8 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Tauri dev icons (auto-generated)
-src-tauri/icons/
+# Tauri build outputs
+src-tauri/target/
 
 # User custom locale overrides
 src/i18n/locales/*.json
