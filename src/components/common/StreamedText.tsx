@@ -71,7 +71,7 @@ function looksLikeMarkdown(text: string): boolean {
  * Concatenates extracted values for a continuous reading experience.
  */
 function extractNarrativeFromStreamedJson(full: string): string {
-  if (!full) return '';
+  if (!full || typeof full !== 'string') return '';
 
   let s = full;
   s = s.replace(/<thinking>[\s\S]*?<\/thinking>/g, '');
@@ -106,7 +106,8 @@ function extractNarrativeFromStreamedJson(full: string): string {
       }
 
       // Find abilities after description
-      const afterDesc = description ? s.slice(s.indexOf(description) + description.length) : afterTitle;
+      const descEndIdx = description ? s.indexOf(description, absTitlePos) + description.length : absTitlePos;
+      const afterDesc = s.slice(descEndIdx);
       const abilPosInAfter = findJsonKey(afterDesc, 'abilities');
       let abilities = '';
       if (abilPosInAfter !== -1) {
@@ -148,9 +149,10 @@ function extractNarrativeFromStreamedJson(full: string): string {
   const descStart = findJsonKey(s, 'description');
   if (descStart !== -1) {
     const { value } = extractJsonString(s, descStart);
-    if (value.trim()) {
+    if (value && value.trim()) {
       const trimmed = value.trim();
-      if (!parts.length || !parts[parts.length - 1].endsWith(trimmed.slice(0, 20))) {
+      const lastPart = parts[parts.length - 1] || '';
+      if (!parts.length || !lastPart.endsWith(trimmed.slice(0, Math.min(20, trimmed.length)))) {
         parts.push(trimmed);
       }
     }
@@ -171,7 +173,8 @@ function extractNarrativeFromStreamedJson(full: string): string {
 }
 
 export default function StreamedText({ text, isStreaming }: StreamedTextProps) {
-  const displayText = isStreaming ? extractNarrativeFromStreamedJson(text) : text;
+  const safeText = typeof text === 'string' ? text : '';
+  const displayText = isStreaming ? extractNarrativeFromStreamedJson(safeText) : safeText;
 
   const rendered = useMemo(() => {
     if (!displayText) return '';

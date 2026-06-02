@@ -329,7 +329,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         isBuiltIn,
         type,
         (token) => {
-          set((state) => ({ streamedText: state.streamedText + token }));
+          if (token) set((state) => ({ streamedText: state.streamedText + token }));
         }
       );
 
@@ -377,7 +377,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         type,
         llmConfig,
         (token) => {
-          set((state) => ({ streamedText: state.streamedText + token }));
+          if (token) set((state) => ({ streamedText: state.streamedText + token }));
         }
       );
 
@@ -447,7 +447,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         pendingStartParams.isBuiltIn,
         pendingStartParams.type,
         (token) => {
-          set((state) => ({ streamedText: state.streamedText + token }));
+          if (token) set((state) => ({ streamedText: state.streamedText + token }));
         }
       );
 
@@ -554,7 +554,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         [{ role: 'user', content: bioPrompt }],
         bioLlmConfig,
         (token) => {
-          set((state) => ({ streamedText: state.streamedText + token }));
+          if (token) set((state) => ({ streamedText: state.streamedText + token }));
         }
       );
 
@@ -688,7 +688,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         'single',
         llmConfig,
         (token) => {
-          set((state) => ({ streamedText: state.streamedText + token }));
+          if (token) set((state) => ({ streamedText: state.streamedText + token }));
         }
       );
 

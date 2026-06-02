@@ -107,7 +107,7 @@ export class GameEngine {
     const prologueScenario: Scenario = {
       id: generateId(),
       title: data.title || '序章',
-      description: data.prologue + '\n\n' + (data.description || ''),
+      description: (data.prologue || '') + '\n\n' + (data.description || ''),
       choices: (data.choices || []).map((c) => ({
         id: c.id,
         text: c.text,
