@@ -46,6 +46,9 @@ export default function StartScreen() {
   const [gameMode, setGameMode] = useState<'basic' | 'system'>('basic');
   const [nameError, setNameError] = useState<string | null>(null);
   const [pendingDeleteSession, setPendingDeleteSession] = useState<string | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState(() => {
+    return !localStorage.getItem('bio_has_seen_onboarding');
+  });
 
   // Load resume sessions on mount
   useEffect(() => {
@@ -127,6 +130,38 @@ export default function StartScreen() {
             </button>
           )}
         </div>
+
+        {/* ── Onboarding hint ─────────────────────── */}
+        {!config && showOnboarding && (
+          <div className="glass-panel !bg-blue-900/20 border-blue-500/30 p-4 mb-4">
+            <div className="flex items-start gap-3">
+              <svg className="w-5 h-5 text-blue-400 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <div className="flex-1">
+                <h4 className="text-sm font-medium text-blue-300 mb-1">欢迎使用传记生成器</h4>
+                <p className="text-sm text-gray-300 mb-2">
+                  本应用完全本地运行，数据保存在您的设备上。使用前请先在<strong>设置</strong>中配置 LLM API Key。
+                </p>
+                <p className="text-xs text-gray-400">
+                  支持 DeepSeek（免费）、OpenAI、Ollama（本地）等提供商。配置后即可开始创作。
+                </p>
+              </div>
+              <button
+                onClick={() => {
+                  setShowOnboarding(false);
+                  localStorage.setItem('bio_has_seen_onboarding', '1');
+                }}
+                className="text-gray-500 hover:text-gray-300 shrink-0"
+                title="不再显示"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* ── Player name ───────────────────────────── */}
         <div className="mb-5">

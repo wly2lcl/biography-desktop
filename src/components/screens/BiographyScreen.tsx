@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
 import { useGameStore } from '@/store/gameStore';
 import StreamedText from '@/components/common/StreamedText';
+import { t } from '@/i18n';
 
 export default function BiographyScreen() {
   const {
@@ -105,7 +106,7 @@ export default function BiographyScreen() {
             disabled={!hasContent}
             className="btn-primary min-w-[130px] text-sm"
           >
-            下载传记
+            {t('screens.biography.download')}
           </button>
           {!isStreaming && (
             <button
@@ -122,7 +123,7 @@ export default function BiographyScreen() {
             onClick={newGame}
             className="btn-secondary min-w-[130px] text-sm"
           >
-            新旅程
+            {t('screens.biography.newJourney')}
           </button>
         </div>
       </div>

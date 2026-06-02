@@ -548,6 +548,79 @@ function DataTabContent({
     }
   }, [onRefresh]);
 
+  const handleExportAll = useCallback(async () => {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const { save } = await import('@tauri-apps/plugin-dialog');
+      const { writeTextFile } = await import('@tauri-apps/plugin-fs');
+
+      const data = await invoke('export_full_data') as string;
+      const filePath = await save({
+        title: '导出数据',
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      });
+      if (filePath) {
+        await writeTextFile(filePath, data);
+        alert('数据导出成功！');
+        onRefresh?.();
+      }
+    } catch (err) {
+      // Fallback: download as blob in web mode
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const data = await invoke('export_full_data') as string;
+        const blob = new Blob([data], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `biography-export-${Date.now()}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+        onRefresh?.();
+      } catch {
+        alert(`导出失败: ${err instanceof Error ? err.message : '未知错误'}`);
+      }
+    }
+  }, [onRefresh]);
+
+  const handleImportAll = useCallback(async () => {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const { readTextFile } = await import('@tauri-apps/plugin-fs');
+
+      const filePath = await open({
+        title: '导入数据',
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      });
+      if (filePath) {
+        const data = await readTextFile(filePath);
+        const result = await invoke('import_full_data', { data }) as string;
+        alert(result);
+        onRefresh?.();
+      }
+    } catch (err) {
+      // Fallback: file input in web mode
+      try {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json';
+        input.onchange = async (e) => {
+          const file = (e.target as HTMLInputElement).files?.[0];
+          if (!file) return;
+          const text = await file.text();
+          const { invoke } = await import('@tauri-apps/api/core');
+          const result = await invoke('import_full_data', { data: text }) as string;
+          alert(result);
+          onRefresh?.();
+        };
+        input.click();
+      } catch {
+        alert(`导入失败: ${err instanceof Error ? err.message : '未知错误'}`);
+      }
+    }
+  }, [onRefresh]);
+
   return (
     <div className="space-y-5">
       {/* Database info */}
@@ -598,6 +671,17 @@ function DataTabContent({
             此操作将永久删除所有会话数据，无法撤销。
           </p>
         </div>
+      </div>
+
+      {/* Export / Import all data */}
+      <div className="space-y-3 pt-3 border-t border-gray-700/50">
+        <h4 className="text-sm font-medium text-gray-300">全部数据</h4>
+        <button onClick={handleExportAll} className="btn-secondary text-sm w-full sm:w-auto">
+          导出全部数据（JSON）
+        </button>
+        <button onClick={handleImportAll} className="btn-primary text-sm w-full sm:w-auto">
+          导入全部数据（JSON）
+        </button>
       </div>
     </div>
   );

@@ -74,6 +74,7 @@ async fn main() {
             commands::world::delete_world,
             commands::world::export_world,
             commands::world::import_world,
+            commands::world::export_worlds,
             commands::world::open_worlds_folder,
             commands::data::get_database_info,
             commands::data::backup_database,

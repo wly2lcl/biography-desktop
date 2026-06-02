@@ -1,9 +1,12 @@
 // src-tauri/src/commands/world.rs - World management commands
 
 use serde_json::json;
+use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager, State};
+
+use crate::AppDb;
 
 fn get_worlds_dir(app: &AppHandle) -> PathBuf {
     app.path().app_data_dir().unwrap().join("worlds")
@@ -107,6 +110,11 @@ pub async fn load_world(
     app: AppHandle,
     filename: String,
 ) -> Result<String, String> {
+    // Security check: prevent path traversal
+    if filename.contains("..") || filename.starts_with('/') || filename.contains('\\') {
+        return Err("Invalid filename".to_string());
+    }
+
     let worlds_dir = get_worlds_dir(&app);
     let path = worlds_dir.join(&filename);
 
@@ -137,16 +145,21 @@ pub async fn save_world(
     world_name: String,
     content: String,
 ) -> Result<(), String> {
+    // Security check: prevent path traversal
+    if world_name.contains("..") || world_name.starts_with('/') || world_name.contains('\\') {
+        return Err("Invalid world name".to_string());
+    }
+
     let worlds_dir = get_worlds_dir(&app);
     fs::create_dir_all(&worlds_dir).map_err(|e| e.to_string())?;
 
-    let path = worlds_dir.join(format!("{}.md", world_name));
+    let filename = format!("{}.md", world_name);
+    let path = worlds_dir.join(&filename);
 
-    // Path safety check
+    // Path safety check: ensure the resolved path stays within worlds_dir
     let canonical_parent = worlds_dir.canonicalize().map_err(|e| e.to_string())?;
     let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
-    // For new files, check that the parent is safe
-    if !path.starts_with(&canonical_parent) {
+    if !canonical.starts_with(&canonical_parent) {
         return Err("Invalid path".to_string());
     }
 
@@ -158,6 +171,11 @@ pub async fn delete_world(
     app: AppHandle,
     world_name: String,
 ) -> Result<(), String> {
+    // Security check: prevent path traversal
+    if world_name.contains("..") || world_name.starts_with('/') || world_name.contains('\\') {
+        return Err("Invalid world name".to_string());
+    }
+
     let worlds_dir = get_worlds_dir(&app);
     let path = worlds_dir.join(&world_name);
 
@@ -180,6 +198,11 @@ pub async fn export_world(
     app: AppHandle,
     world_name: String,
 ) -> Result<String, String> {
+    // Security check: prevent path traversal
+    if world_name.contains("..") || world_name.starts_with('/') || world_name.contains('\\') {
+        return Err("Invalid world name".to_string());
+    }
+
     let worlds_dir = get_worlds_dir(&app);
     let path = worlds_dir.join(&world_name);
 
@@ -209,11 +232,30 @@ pub async fn import_world(
     source_path: String,
     dest_name: String,
 ) -> Result<(), String> {
+    // Security check: prevent path traversal in destination
+    if dest_name.contains("..") || dest_name.starts_with('/') || dest_name.contains('\\') {
+        return Err("Invalid destination name".to_string());
+    }
+
+    // Security check: prevent path traversal in source
+    if source_path.contains("..") {
+        return Err("Invalid source path".to_string());
+    }
+
     let worlds_dir = get_worlds_dir(&app);
     fs::create_dir_all(&worlds_dir).map_err(|e| e.to_string())?;
 
     let source = PathBuf::from(&source_path);
     let dest = worlds_dir.join(&dest_name);
+
+    // Verify destination stays within worlds_dir
+    let canonical_parent = worlds_dir.canonicalize().map_err(|e| e.to_string())?;
+    if source.is_file() || source.is_dir() {
+        let canonical_dest = dest.canonicalize().unwrap_or_else(|_| dest.clone());
+        if !canonical_dest.starts_with(&canonical_parent) {
+            return Err("Path traversal detected".to_string());
+        }
+    }
 
     if source.is_file() {
         fs::copy(&source, &dest).map_err(|e| e.to_string())?;
@@ -222,6 +264,31 @@ pub async fn import_world(
     }
 
     Ok(())
+}
+
+#[tauri::command]
+pub async fn export_worlds(
+    state: State<'_, AppDb>,
+    filenames: Vec<String>,
+) -> Result<String, String> {
+    let worlds_dir = state.data_dir.join("worlds");
+    let mut world_data = serde_json::Map::new();
+
+    for filename in &filenames {
+        // Security check: prevent path traversal
+        if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+            return Err(format!("Invalid filename: {}", filename));
+        }
+
+        let path = worlds_dir.join(filename);
+        if path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                world_data.insert(filename.clone(), Value::String(content));
+            }
+        }
+    }
+
+    Ok(serde_json::to_string(&Value::Object(world_data)).map_err(|e| e.to_string())?)
 }
 
 #[tauri::command]

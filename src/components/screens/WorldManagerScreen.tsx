@@ -42,6 +42,7 @@ export default function WorldManagerScreen() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<WorldEntry | null>(null);
   const [previewContent, setPreviewContent] = useState<string | null>(null);
   const [previewName, setPreviewName] = useState('');
+  const [selectedFilenames, setSelectedFilenames] = useState<Set<string>>(new Set());
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Rebuild lists whenever worlds changes
@@ -241,6 +242,69 @@ export default function WorldManagerScreen() {
     [loadWorlds],
   );
 
+  // ── Selection toggle for batch export ───────────
+  const toggleSelection = useCallback((filename: string) => {
+    setSelectedFilenames((prev) => {
+      const next = new Set(prev);
+      if (next.has(filename)) {
+        next.delete(filename);
+      } else {
+        next.add(filename);
+      }
+      return next;
+    });
+  }, []);
+
+  const isAllSelected = userEntries.length > 0 && userEntries.every((e) => selectedFilenames.has(e.filename));
+
+  const toggleSelectAll = useCallback(() => {
+    if (isAllSelected) {
+      setSelectedFilenames(new Set());
+    } else {
+      setSelectedFilenames(new Set(userEntries.map((e) => e.filename)));
+    }
+  }, [userEntries, isAllSelected]);
+
+  // ── Batch export ─────────────────────────────────
+  const handleBatchExport = useCallback(async () => {
+    const selected = userEntries.filter((e) => selectedFilenames.has(e.filename));
+    if (selected.length === 0) return;
+
+    try {
+      let worldData: Record<string, string> = {};
+
+      if (isTauri()) {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const result = (await invoke('export_worlds', {
+          filenames: selected.map((e) => e.filename),
+        })) as string;
+        worldData = JSON.parse(result);
+      } else {
+        // Web mode: collect from localStorage
+        for (const entry of selected) {
+          const content = localStorage.getItem(`bio_world_${entry.filename}`);
+          if (content) {
+            worldData[entry.filename] = content;
+          }
+        }
+      }
+
+      const json = JSON.stringify(worldData, null, 2);
+      const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = 'worlds_export.json';
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Failed to batch export worlds:', err);
+      alert(`批量导出失败: ${err instanceof Error ? err.message : '未知错误'}`);
+    }
+  }, [userEntries, selectedFilenames]);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-950/90 backdrop-blur-sm animate-fade-in">
       {/* Panel */}
@@ -267,6 +331,15 @@ export default function WorldManagerScreen() {
               >
                 📥 导入
               </button>
+              {selectedFilenames.size > 0 && (
+                <button
+                  type="button"
+                  onClick={handleBatchExport}
+                  className="btn-secondary text-sm"
+                >
+                  批量导出 ({selectedFilenames.size})
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setShowWorldManager(false)}
@@ -308,9 +381,22 @@ export default function WorldManagerScreen() {
 
           {/* User worlds */}
           <section>
-            <h3 className="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">
-              用户世界
-            </h3>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-medium text-gray-400 uppercase tracking-wider">
+                用户世界
+              </h3>
+              {userEntries.length > 0 && (
+                <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer hover:text-gray-300 transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={isAllSelected}
+                    onChange={toggleSelectAll}
+                    className="rounded border-gray-600 bg-dark-800 text-primary-500 focus:ring-primary-500/50"
+                  />
+                  全选
+                </label>
+              )}
+            </div>
             {userEntries.length === 0 ? (
               <div className="glass-panel !bg-dark-800/30 p-6 text-center">
                 <p className="text-gray-500 text-sm">暂无用户世界，点击「+ 新建」或「📥 导入」添加</p>
@@ -321,6 +407,8 @@ export default function WorldManagerScreen() {
                   <WorldCard
                     key={entry.filename}
                     entry={entry}
+                    selected={selectedFilenames.has(entry.filename)}
+                    onToggleSelect={() => toggleSelection(entry.filename)}
                     onPreview={() => handlePreview(entry)}
                     onEdit={() => {
                       setEditingEntry(entry);
@@ -392,12 +480,16 @@ export default function WorldManagerScreen() {
 
 function WorldCard({
   entry,
+  selected,
+  onToggleSelect,
   onPreview,
   onEdit,
   onExport,
   onDelete,
 }: {
   entry: WorldEntry;
+  selected?: boolean;
+  onToggleSelect?: () => void;
   onPreview: () => void;
   onEdit: (() => void) | null;
   onExport: (() => void) | null;
@@ -407,7 +499,17 @@ function WorldCard({
     <div className="card-base animate-slide-up">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <h4 className="text-gray-100 font-medium truncate">{entry.name}</h4>
+          <div className="flex items-center gap-2">
+            {onToggleSelect && (
+              <input
+                type="checkbox"
+                checked={!!selected}
+                onChange={onToggleSelect}
+                className="rounded border-gray-600 bg-dark-800 text-primary-500 focus:ring-primary-500/50 shrink-0"
+              />
+            )}
+            <h4 className="text-gray-100 font-medium truncate">{entry.name}</h4>
+          </div>
           {entry.description && (
             <p className="text-gray-500 text-xs mt-1 line-clamp-2 leading-relaxed">
               {entry.description}

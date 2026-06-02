@@ -28,3 +28,7 @@ npm-debug.log*
 
 # Tauri dev icons (auto-generated)
 src-tauri/icons/
+
+# User custom locale overrides
+src/i18n/locales/*.json
+!src/i18n/locales/zh-CN.json

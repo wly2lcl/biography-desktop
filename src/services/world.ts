@@ -96,10 +96,25 @@ export async function loadBuiltInWorld(
     content = await response.text();
   }
 
-  // Enforce character limit
+  // Smart truncation: cut at markdown heading boundary to preserve structure
   const maxChars = 50000;
   if (content.length > maxChars) {
-    content = content.slice(0, maxChars);
+    const truncated = content.slice(0, maxChars);
+    // Try to find the last heading boundary in the first 80% of truncation point
+    const searchFrom = Math.floor(maxChars * 0.8);
+    const lastHeading = truncated.lastIndexOf('\n## ', searchFrom);
+    if (lastHeading > maxChars * 0.3) {
+      // Found a good heading cut point
+      content = truncated.slice(0, lastHeading) + '\n\n……（世界观细节略）';
+    } else {
+      // Fallback: cut at last newline
+      const lastNewline = truncated.lastIndexOf('\n');
+      if (lastNewline > maxChars * 0.5) {
+        content = truncated.slice(0, lastNewline) + '\n\n……（世界观细节略）';
+      } else {
+        content = truncated + '……';
+      }
+    }
   }
 
   // Cache management
