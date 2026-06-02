@@ -17,6 +17,29 @@ const WORLD_CACHE = new Map<
 const DEFAULT_TTL = 300 * 1000; // 5 minutes
 const MAX_CACHE_SIZE = 20;
 
+/** Remove expired entries and evict oldest (LRU) when over capacity */
+function cleanupExpired(): void {
+  const now = Date.now();
+  // Remove expired entries
+  for (const [key, entry] of WORLD_CACHE) {
+    if (now - entry.timestamp >= DEFAULT_TTL) {
+      WORLD_CACHE.delete(key);
+    }
+  }
+  // Evict oldest entries until under MAX_CACHE_SIZE
+  while (WORLD_CACHE.size > MAX_CACHE_SIZE) {
+    let oldestKey: string | undefined;
+    let oldestTime = Infinity;
+    for (const [key, entry] of WORLD_CACHE) {
+      if (entry.timestamp < oldestTime) {
+        oldestTime = entry.timestamp;
+        oldestKey = key;
+      }
+    }
+    if (oldestKey) WORLD_CACHE.delete(oldestKey);
+  }
+}
+
 // Known built-in worlds (fallback for web mode where directory listing is unavailable)
 const KNOWN_BUILTIN_WORLDS: WorldMeta[] = [
   {
@@ -48,6 +71,7 @@ export async function loadBuiltInWorld(
   filename: string,
   type: 'single' | 'directory'
 ): Promise<string> {
+  cleanupExpired();
   const cacheKey = `builtin:${filename}`;
   const cached = WORLD_CACHE.get(cacheKey);
 

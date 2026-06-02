@@ -9,7 +9,7 @@ export function parseLLMJSON(raw: string): unknown {
   let cleaned = raw
     .replace(/<thinking>.*?<\/thinking>/gs, '')
     .replace(/<reasoning>.*?<\/reasoning>/gs, '')
-    .replace(/<answer>.*?<\/answer>/gs, '')
+    .replace(/<\/?answer>/g, '')
     // 2. Clean markdown code fences
     .replace(/```(?:json)?\s*/g, '')
     .replace(/\s*```/g, '')
@@ -95,7 +95,7 @@ export function cleanLLMOutput(text: string): string {
   return text
     .replace(/<thinking>.*?<\/thinking>/gs, '')
     .replace(/<reasoning>.*?<\/reasoning>/gs, '')
-    .replace(/<answer>.*?<\/answer>/gs, '')
+    .replace(/<\/?answer>/g, '')
     .replace(/```(?:json)?\s*/g, '')
     .replace(/\s*```/g, '')
     .replace(/\s+/g, ' ')

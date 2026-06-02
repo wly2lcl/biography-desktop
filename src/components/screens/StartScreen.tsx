@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useGameStore } from '@/store/gameStore';
 import { formatTimestamp } from '@/utils/format';
 import type { SessionSummary, WorldInfo } from '@/types/models';
+import ConfirmModal from '@/components/common/ConfirmModal';
 
 /**
  * Extended world entry with metadata needed for game start.
@@ -44,6 +45,7 @@ export default function StartScreen() {
   const [selectedWorld, setSelectedWorld] = useState<string>('');
   const [gameMode, setGameMode] = useState<'basic' | 'system'>('basic');
   const [nameError, setNameError] = useState<string | null>(null);
+  const [pendingDeleteSession, setPendingDeleteSession] = useState<string | null>(null);
 
   // Load resume sessions on mount
   useEffect(() => {
@@ -244,7 +246,7 @@ export default function StartScreen() {
                   key={session.sessionId}
                   session={session}
                   onResume={() => resumeGame(session.sessionId)}
-                  onDelete={() => deleteSession(session.sessionId)}
+                  onDelete={() => setPendingDeleteSession(session.sessionId)}
                   isLoading={isLoading}
                 />
               ))}
@@ -252,6 +254,22 @@ export default function StartScreen() {
           </div>
         )}
       </div>
+
+      {/* Delete confirmation modal */}
+      {pendingDeleteSession && (
+        <ConfirmModal
+          title="删除旅程"
+          message="确定要删除这个旅程吗？此操作不可恢复。"
+          confirmText="删除"
+          cancelText="取消"
+          danger
+          onConfirm={() => {
+            deleteSession(pendingDeleteSession);
+            setPendingDeleteSession(null);
+          }}
+          onCancel={() => setPendingDeleteSession(null)}
+        />
+      )}
     </div>
   );
 }
@@ -282,9 +300,7 @@ function ResumeCard({
           type="button"
           onClick={(e) => {
             e.stopPropagation();
-            if (confirm('确定要删除这个旅程吗？此操作不可恢复。')) {
-              onDelete();
-            }
+            onDelete();
           }}
           className="p-2 text-gray-500 hover:text-red-400 transition-colors"
           disabled={isLoading}

@@ -320,7 +320,7 @@ export class GameEngine {
     }
   }
 
-  private applyNextScenario(session: GameSession, data: unknown): void {
+  private applyNextScenario(session: GameSession, data: unknown, llmConfig?: LLMConfig): void {
     const typed = data as Record<string, unknown>;
 
     const nextScenario: Scenario = {
@@ -364,7 +364,7 @@ export class GameEngine {
         });
         session.scenarios = [nextScenario];
         session.player.currentScenario = nextScenario.id;
-        this.maybeSummarize(session);
+        this.maybeSummarize(session, llmConfig);
         return;
       }
     }
@@ -373,50 +373,69 @@ export class GameEngine {
     session.scenarios = [nextScenario];
     session.player.currentScenario = nextScenario.id;
 
-    this.maybeSummarize(session);
+    this.maybeSummarize(session, llmConfig);
   }
 
-  private async maybeSummarize(session: GameSession): Promise<void> {
-    const historyLen = session.player.history.length;
+  private summarizing = false;
 
-    if (historyLen >= this.config.summaryThreshold) {
-      try {
-        await this.generateSummary(session);
-      } catch {
-        // Continue without summary
+  private async maybeSummarize(session: GameSession, llmConfig?: LLMConfig): Promise<void> {
+    if (this.summarizing) return;
+    this.summarizing = true;
+
+    try {
+      const historyLen = session.player.history.length;
+
+      if (historyLen >= this.config.summaryThreshold) {
+        try {
+          await this.generateSummary(session);
+        } catch {
+          // Continue without summary
+        }
+      } else if (historyLen > this.config.maxHistoryHardCap) {
+        const keepLatest = session.player.history.slice(-this.config.summaryKeepLatest);
+        const truncated = session.player.history.slice(0, -this.config.summaryKeepLatest);
+
+        try {
+          const eventsText = prompts.formatHistory(truncated);
+          const summaryConfig: LLMConfig = llmConfig
+            ? { ...llmConfig, temperature: 0, maxTokens: 1024 }
+            : { apiKey: '', baseUrl: '', model: '', temperature: 0, maxTokens: 1024, timeout: 30000 };
+          if (llmConfig?.apiKey) {
+            const newSummary = await streamChatText(
+              [
+                {
+                  role: 'user',
+                  content: prompts.format(prompts.summarizationPrompt(), {
+                    existing_summary: session.player.summary,
+                    new_events: eventsText,
+                  }),
+                },
+              ],
+              summaryConfig,
+            );
+            session.player.summary = newSummary;
+          } else {
+            // No API key available, use fallback
+            session.player.summary +=
+              '\n' +
+              truncated
+                .slice(-5)
+                .map((h) => `${h.scenario} → ${h.choice}`)
+                .join('；');
+          }
+        } catch {
+          session.player.summary +=
+            '\n' +
+            truncated
+              .slice(-5)
+              .map((h) => `${h.scenario} → ${h.choice}`)
+              .join('；');
+        }
+
+        session.player.history = keepLatest;
       }
-      return;
-    }
-
-    if (historyLen > this.config.maxHistoryHardCap) {
-      const keepLatest = session.player.history.slice(-this.config.summaryKeepLatest);
-      const truncated = session.player.history.slice(0, -this.config.summaryKeepLatest);
-
-      try {
-        const eventsText = prompts.formatHistory(truncated);
-        const newSummary = await streamChatText(
-          [
-            {
-              role: 'user',
-              content: prompts.format(prompts.summarizationPrompt(), {
-                existing_summary: session.player.summary,
-                new_events: eventsText,
-              }),
-            },
-          ],
-          { apiKey: '', baseUrl: '', model: '', temperature: 0, maxTokens: 1024, timeout: 30000 }
-        );
-        session.player.summary = newSummary;
-      } catch {
-        session.player.summary +=
-          '\n' +
-          truncated
-            .slice(-5)
-            .map((h) => `${h.scenario} → ${h.choice}`)
-            .join('；');
-      }
-
-      session.player.history = keepLatest;
+    } finally {
+      this.summarizing = false;
     }
   }
 

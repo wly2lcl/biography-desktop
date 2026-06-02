@@ -115,6 +115,35 @@ function settingsToConfig(s: AppSettings): AppConfig {
   };
 }
 
+/** Categorize errors into user-friendly Chinese messages */
+function formatErrorMessage(err: unknown, defaultMsg: string): string {
+  if (err instanceof Error) {
+    const msg = err.message;
+    // Network errors
+    if (/fetch|network|ECONNREFUSED|ENOTFOUND|ERR_CONNECTION_REFUSED/i.test(msg)) {
+      return '网络连接失败，请检查网络设置';
+    }
+    // Timeout
+    if (/timeout|abort|timed ?out|ETIMEDOUT/i.test(msg)) {
+      return '请求超时，请检查网络或 LLM 服务状态';
+    }
+    // Auth errors (401/403)
+    if (/401|403|unauthorized|forbidden|invalid.*api.?key|api.?key.*invalid/i.test(msg)) {
+      return 'API Key 无效或已过期，请重新配置';
+    }
+    // Rate limit (429)
+    if (/429|rate.?limit|too many requests/i.test(msg)) {
+      return '请求过于频繁，请稍后重试';
+    }
+    // JSON parse errors
+    if (/JSON|parse|unexpected token/i.test(msg)) {
+      return 'LLM 响应解析失败，已使用备选方案';
+    }
+    return `操作失败: ${msg}`;
+  }
+  return defaultMsg;
+}
+
 export const useGameStore = create<GameState>((set, get) => ({
   // Initial state
   currentScreen: 'start',
@@ -313,7 +342,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       });
     } catch (err) {
       set({
-        error: err instanceof Error ? err.message : '开始游戏失败',
+        error: formatErrorMessage(err, '开始游戏失败'),
         isStreaming: false,
         streamedText: '',
         currentScreen: 'start',
@@ -357,7 +386,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       });
     } catch (err) {
       set({
-        error: err instanceof Error ? err.message : '生成系统方案失败',
+        error: formatErrorMessage(err, '生成系统方案失败'),
         isStreaming: false,
         streamedText: '',
       });
@@ -432,7 +461,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       });
     } catch (err) {
       set({
-        error: err instanceof Error ? err.message : '开始游戏失败',
+        error: formatErrorMessage(err, '开始游戏失败'),
         isStreaming: false,
         streamedText: '',
         pendingStartParams: null,
@@ -467,7 +496,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       }
     } catch (err) {
       set({
-        error: err instanceof Error ? err.message : '处理选择失败',
+        error: formatErrorMessage(err, '处理选择失败'),
         isStreaming: false,
         streamedText: '',
       });
@@ -536,7 +565,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       });
     } catch (err) {
       set({
-        error: err instanceof Error ? err.message : '生成传记失败',
+        error: formatErrorMessage(err, '生成传记失败'),
         isStreaming: false,
         streamedText: '',
       });
@@ -601,7 +630,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         });
       }
     } catch (err) {
-      set({ error: err instanceof Error ? err.message : '恢复游戏失败' });
+      set({ error: formatErrorMessage(err, '恢复游戏失败') });
     }
   },
 
@@ -671,7 +700,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       });
     } catch (err) {
       set({
-        error: err instanceof Error ? err.message : '问答失败',
+        error: formatErrorMessage(err, '问答失败'),
         streamedText: '',
       });
     }

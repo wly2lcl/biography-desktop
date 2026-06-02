@@ -16,6 +16,17 @@ const DEFAULT_RETRY_OPTIONS: RetryOptions = {
   retryableErrors: ['ETIMEDOUT', 'ECONNRESET', 'Rate limit', 'network', 'fetch'],
 };
 
+/**
+ * Determine if an HTTP status code is retryable.
+ * - 4xx client errors are generally NOT retryable (except 429).
+ * - 5xx server errors are retryable.
+ */
+export function isRetryableHttpError(statusCode: number): boolean {
+  if (statusCode >= 500) return true;
+  if (statusCode === 429) return true; // Rate limit — retryable with longer delay
+  return false; // 400-418, 401, 403, 404, etc. — not retryable
+}
+
 export async function withRetry<T>(
   fn: () => Promise<T>,
   options: Partial<RetryOptions> = {}
@@ -30,13 +41,40 @@ export async function withRetry<T>(
       lastError = error as Error;
       const message = error instanceof Error ? error.message : String(error);
 
-      // Check if error is retryable
-      const isRetryable = opts.retryableErrors.some((e) =>
-        message.toLowerCase().includes(e.toLowerCase())
-      );
+      // Check HTTP status code first (e.g. "HTTP 429", "HTTP 500")
+      const httpMatch = message.match(/HTTP\s+(\d{3})/);
+      let isHttpRetryable = false;
+      if (httpMatch) {
+        const statusCode = parseInt(httpMatch[1], 10);
+        if (statusCode === 429) {
+          // Rate limit: retryable with longer backoff
+          const delay = Math.min(
+            opts.initialDelayMs * Math.pow(3, attempt - 1),
+            opts.maxDelayMs
+          ) + Math.random() * opts.jitterMs;
+          console.warn(
+            `LLM retry attempt ${attempt}/${opts.maxAttempts} after ${Math.round(delay)}ms (HTTP ${statusCode}): ${message}`
+          );
+          await new Promise((r) => setTimeout(r, delay));
+          continue;
+        }
+        if (!isRetryableHttpError(statusCode)) {
+          // Non-retryable HTTP error (4xx except 429)
+          throw lastError;
+        }
+        // 5xx: retryable — skip message-based fallback
+        isHttpRetryable = true;
+      }
 
-      if (!isRetryable || attempt === opts.maxAttempts) {
-        throw lastError;
+      // Fallback: check error message strings (skip if HTTP status already handled)
+      if (!isHttpRetryable) {
+        const isRetryable = opts.retryableErrors.some((e) =>
+          message.toLowerCase().includes(e.toLowerCase())
+        );
+
+        if (!isRetryable || attempt === opts.maxAttempts) {
+          throw lastError;
+        }
       }
 
       // Exponential backoff + jitter

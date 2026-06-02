@@ -2,6 +2,7 @@
 
 use crate::AppDb;
 use serde_json::json;
+use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
 use tauri::State;
@@ -176,7 +177,7 @@ pub async fn clear_all_sessions(
 pub async fn export_full_data(
     state: State<'_, AppDb>,
 ) -> Result<String, String> {
-    let sessions = sqlx::query(
+    let rows = sqlx::query(
         "SELECT session_id, world, game_mode, system, player_name,
                 player_history, player_attributes, player_inventory,
                 player_summary, player_qa_history, scenarios_json,
@@ -187,11 +188,50 @@ pub async fn export_full_data(
     .await
     .map_err(|e| e.to_string())?;
 
+    let sessions: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            let session_id: String = row.get("session_id");
+            let world: String = row.get("world");
+            let game_mode: String = row.get("game_mode");
+            let system: Option<String> = row.get("system");
+            let player_name: String = row.get("player_name");
+            let player_history: String = row.get("player_history");
+            let player_attributes: String = row.get("player_attributes");
+            let player_inventory: String = row.get("player_inventory");
+            let player_summary: String = row.get("player_summary");
+            let player_qa_history: String = row.get("player_qa_history");
+            let scenarios_json: String = row.get("scenarios_json");
+            let is_active: bool = row.get("is_active");
+            let biography: Option<String> = row.get("biography");
+            let created_at: String = row.get("created_at");
+
+            json!({
+                "sessionId": session_id,
+                "world": world,
+                "gameMode": game_mode,
+                "system": system,
+                "player": {
+                    "name": player_name,
+                    "history": serde_json::from_str::<Value>(&player_history).unwrap_or(Value::Array(vec![])),
+                    "attributes": serde_json::from_str::<Value>(&player_attributes).unwrap_or(Value::Object(serde_json::Map::new())),
+                    "inventory": serde_json::from_str::<Value>(&player_inventory).unwrap_or(Value::Array(vec![])),
+                    "summary": player_summary,
+                    "qaHistory": serde_json::from_str::<Value>(&player_qa_history).unwrap_or(Value::Array(vec![])),
+                },
+                "scenarios": serde_json::from_str::<Value>(&scenarios_json).unwrap_or(Value::Array(vec![])),
+                "isActive": is_active,
+                "biography": biography,
+                "createdAt": created_at,
+            })
+        })
+        .collect();
+
     let export_data = json!({
         "version": "1.0",
         "exportedAt": chrono::Local::now().to_rfc3339(),
         "appVersion": env!("CARGO_PKG_VERSION"),
-        "sessions": sessions.len(),
+        "sessions": sessions,
     });
 
     Ok(serde_json::to_string_pretty(&export_data).map_err(|e| e.to_string())?)
@@ -199,10 +239,50 @@ pub async fn export_full_data(
 
 #[tauri::command]
 pub async fn import_full_data(
-    _state: State<'_, AppDb>,
-    _data: String,
+    state: State<'_, AppDb>,
+    data: String,
 ) -> Result<String, String> {
-    Ok("Data imported successfully".to_string())
+    let parsed: Value = serde_json::from_str(&data).map_err(|e| e.to_string())?;
+    let sessions = parsed["sessions"]
+        .as_array()
+        .ok_or("Missing or invalid 'sessions' array in import data")?;
+
+    let mut tx = state.pool.begin().await.map_err(|e| e.to_string())?;
+
+    for session in sessions {
+        let session_id = session["sessionId"]
+            .as_str()
+            .ok_or("Missing sessionId in session entry")?;
+
+        sqlx::query(
+            "INSERT OR REPLACE INTO sessions
+             (session_id, world, game_mode, system, player_name,
+              player_history, player_attributes, player_inventory,
+              player_summary, player_qa_history, scenarios_json,
+              is_active, biography, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+        )
+        .bind(session_id)
+        .bind(session["world"].as_str().unwrap_or(""))
+        .bind(session["gameMode"].as_str().unwrap_or("basic"))
+        .bind(session["system"].as_str())
+        .bind(session["player"]["name"].as_str().unwrap_or(""))
+        .bind(session["player"]["history"].to_string())
+        .bind(session["player"]["attributes"].to_string())
+        .bind(session["player"]["inventory"].to_string())
+        .bind(session["player"]["summary"].as_str().unwrap_or(""))
+        .bind(session["player"]["qaHistory"].to_string())
+        .bind(session["scenarios"].to_string())
+        .bind(if session["isActive"].as_bool().unwrap_or(true) { 1 } else { 0 })
+        .bind(session["biography"].as_str())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+
+    tx.commit().await.map_err(|e| e.to_string())?;
+
+    Ok(format!("Successfully imported {} session(s)", sessions.len()))
 }
 
 // ── Helper functions ───────────────────────────────────────────

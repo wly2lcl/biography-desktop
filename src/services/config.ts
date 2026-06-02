@@ -80,7 +80,10 @@ export async function saveApiKey(apiKey: string): Promise<void> {
     const { invoke } = await import('@tauri-apps/api/core');
     await invoke('set_api_key', { apiKey });
   } catch {
-    // Not in Tauri mode, fallback to localStorage
+    // Not in Tauri mode, fallback to localStorage with warning
+    console.warn(
+      '[Security] API key stored in localStorage. Use Tauri mode for secure keyring storage.'
+    );
     localStorage.setItem('bio_api_key', apiKey);
   }
 }

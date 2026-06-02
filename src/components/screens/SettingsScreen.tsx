@@ -35,10 +35,26 @@ export default function SettingsScreen() {
   const [draft, setDraft] = useState<TempSettings>(() => ({ ...settings }));
   const [showApiKey, setShowApiKey] = useState(false);
   const [testResult, setTestResult] = useState<'idle' | 'testing' | 'success' | 'failure'>('idle');
-  const [dbInfo] = useState<{ path: string; size: number; sessionCount: number; activeCount: number } | null>(null);
+  const [dbInfo, setDbInfo] = useState<{ path: string; size: number; sessionCount: number; activeCount: number } | null>(null);
 
   // Refs for paste
   const apiKeyRef = useRef<HTMLInputElement>(null);
+
+  // ── Refresh DB info ──────────────────────────────
+  const refreshDbInfo = useCallback(async () => {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const info = await invoke('get_database_info') as { path: string; size: number; sessionCount: number; activeCount: number };
+      setDbInfo(info);
+    } catch {
+      setDbInfo(null);
+    }
+  }, []);
+
+  // Fetch db info on mount
+  useEffect(() => {
+    refreshDbInfo();
+  }, [refreshDbInfo]);
 
   // Reset draft when settings change externally
   useEffect(() => {
@@ -176,6 +192,7 @@ export default function SettingsScreen() {
           {activeTab === 'data' && (
             <DataTabContent
               dbInfo={dbInfo}
+              onRefresh={refreshDbInfo}
             />
           )}
           {activeTab === 'about' && (
@@ -493,18 +510,43 @@ function AdvancedTabContent({
 
 function DataTabContent({
   dbInfo,
+  onRefresh,
 }: {
   dbInfo: { path: string; size: number; sessionCount: number; activeCount: number } | null;
+  onRefresh: () => Promise<void>;
 }) {
   const handleBackup = useCallback(async () => {
-    // Backup logic — Tauri-specific, placeholder for now
-    alert('备份功能需要 Tauri 环境支持');
-  }, []);
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const backupPath = await invoke('backup_database') as string;
+      alert(`备份成功！\n文件位置: ${backupPath}`);
+      await onRefresh();
+    } catch (err) {
+      alert(`备份失败: ${err instanceof Error ? err.message : '未知错误'}`);
+    }
+  }, [onRefresh]);
 
   const handleCleanup = useCallback(async () => {
-    // Cleanup logic — placeholder for now
-    alert('清理功能需要 Tauri 环境支持');
-  }, []);
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const count = await invoke('clear_ended_sessions') as number;
+      alert(`已清理 ${count} 个已结束会话`);
+      await onRefresh();
+    } catch (err) {
+      alert(`清理失败: ${err instanceof Error ? err.message : '未知错误'}`);
+    }
+  }, [onRefresh]);
+
+  const handleCleanupAll = useCallback(async () => {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const count = await invoke('clear_all_sessions') as number;
+      alert(`已清理全部 ${count} 个会话`);
+      await onRefresh();
+    } catch (err) {
+      alert(`清理失败: ${err instanceof Error ? err.message : '未知错误'}`);
+    }
+  }, [onRefresh]);
 
   return (
     <div className="space-y-5">
@@ -544,6 +586,18 @@ function DataTabContent({
             此操作将永久删除所有已结束的会话及其传记数据，无法撤销。
           </p>
         </div>
+        <div className="flex items-start gap-3">
+          <button
+            type="button"
+            onClick={handleCleanupAll}
+            className="btn-danger text-sm shrink-0"
+          >
+            清理全部会话
+          </button>
+          <p className="text-xs text-gray-500 leading-relaxed">
+            此操作将永久删除所有会话数据，无法撤销。
+          </p>
+        </div>
       </div>
     </div>
   );
@@ -563,16 +617,17 @@ function InfoRow({ label, value }: { label: string; value: string }) {
    ══════════════════════════════════════════════════════════ */
 
 function AboutTabContent() {
+  const APP_VERSION = import.meta.env.VITE_APP_VERSION || '0.1.0';
   return (
     <div className="space-y-5">
       <div className="text-center mb-6">
         <h3 className="text-xl font-serif text-primary-300 mb-1">传记生成器</h3>
-        <p className="text-gray-500 text-sm">v0.1.0</p>
+        <p className="text-gray-500 text-sm">v{APP_VERSION}</p>
       </div>
 
       <div className="glass-panel !bg-dark-800/50 p-4 space-y-2">
         <InfoRow label="应用名称" value="传记生成器" />
-        <InfoRow label="版本" value="0.1.0" />
+        <InfoRow label="版本" value={APP_VERSION} />
         <InfoRow label="许可证" value="MIT" />
       </div>
 
