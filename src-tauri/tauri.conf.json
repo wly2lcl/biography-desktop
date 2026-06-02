@@ -26,11 +26,8 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["deb", "rpm", "dmg", "app", "msi", "nsis"],
+    "targets": ["deb", "rpm", "dmg", "app", "nsis"],
     "windows": {
-      "wix": {
-        "language": "en-US"
-      },
       "nsis": {
         "installerIcon": "icons/icon.ico"
       }
