@@ -26,6 +26,11 @@ npm-debug.log*
 .env
 .env.local
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
 # Tauri dev icons (auto-generated)
 src-tauri/icons/
 
