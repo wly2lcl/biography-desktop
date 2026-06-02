@@ -126,6 +126,7 @@
 | P1-009 | 摘要生成逻辑有并发风险 | P1 | ✅ | 已添加 summarizing 状态锁 | src/game/engine.ts |
 | P1-010 | 版本硬编码多处不一致 | P1 | ✅ | 已从 npm_package_version 动态注入 | package.json/vite.config.ts |
 | P1-011 | 系统能力仅作文本设定未实质化 | P1 | 🔲 | 系统 abilities 解析为 player.attributes/inventory/skills | src/store/gameStore.ts:418-424 |
+| P1-012 | 流式序章显示 undefined | P1 | ✅ | data.prologue 缺失导致 undefined 拼接 + 多项安全防护 | engine.ts + StreamedText.tsx + gameStore.ts |
 
 ### 💡 长期优化（后续迭代处理）
 
@@ -235,8 +236,8 @@
 | 世界观文件数 | 2 个（已迁移 wuxia_jianghu.md） |
 | 系统方案文件数 | 3 个（已迁移） |
 | Prompt 模板数 | 6 个（已迁移 + 文件系统覆盖支持） |
-| 任务总数 | 189 个（含 P0/P1/P2 + 打包 + CI/CD） |
-| 已完成任务 | 174 个（92%） |
+| 任务总数 | 190 个（含 P0/P1/P2 + 打包 + CI/CD + Bug 修复） |
+| 已完成任务 | 175 个（92%） |
 | 待开始任务 | 5 个（3%，4 项集成测试 + 1 项系统能力实质化） |
 | 暂停任务 | 5 个（3%） |
 | 取消任务 | 5 个（3%） |

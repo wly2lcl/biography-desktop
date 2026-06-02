@@ -373,6 +373,7 @@
 | P1-005 | SettingsScreen 数据管理功能实现 | P1 | ✅ | 3h | src/components/screens/SettingsScreen.tsx:499-507 | 已实现备份/清理/清理全部 Tauri IPC 调用 |
 | P1-008 | 替换原生 confirm 为 ConfirmModal | P1 | ✅ | 1h | src/components/screens/StartScreen.tsx:285 | 已使用 ConfirmModal 组件替换 |
 | P1-011 | 系统能力实质化到玩家状态 | P1 | 🔲 | 4h | src/store/gameStore.ts:418-424 | 系统 abilities 解析为 player.attributes/inventory/skills，而非仅文本设定 |
+| P1-012 | 修复流式序章显示 undefined | P1 | ✅ | 1h | src/game/engine.ts + StreamedText.tsx | data.prologue 缺失导致 undefined 拼接 + abilities 提取定位错误 |
 
 ### 长期优化 (P2)
 
@@ -393,10 +394,10 @@
 |------|------|------|
 | 🔲 待开始 | 5 | 3% |
 | 🔨 进行中 | 0 | 0% |
-| ✅ 已完成 | 174 | 93% |
+| ✅ 已完成 | 175 | 92% |
 | ⏸️ 已暂停 | 5 | 3% |
 | ❌ 已取消 | 5 | 3% |
-| **总计** | **189** | **100%** |
+| **总计** | **190** | **100%** |
 
 ### 预估工作量
 
