@@ -9,6 +9,8 @@ Tauri 2 桌面应用（React + TS + Rust + SQLite），LLM 驱动互动传记叙
 
 **代码修改前，先修改对应文档**（DESIGN.md / DEV_GUIDE.md / TASKS.md / STATUS.md / 本文件），保持代码与文档一致。
 
+**提交 GitHub 前必须征得同意**，未经确认不主动推送代码。
+
 ## 关键命令
 
 ```bash
