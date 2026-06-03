@@ -26,6 +26,9 @@ npm-debug.log*
 .env
 .env.local
 
+# GitHub token (never commit)
+.github/GH_TOKEN
+
 # Python
 __pycache__/
 *.pyc
