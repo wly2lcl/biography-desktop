@@ -186,17 +186,28 @@ export default function GameScreen() {
             {isInactive && (
               <div className="mt-8 p-5 bg-primary-500/10 border border-primary-500/30 rounded-xl text-center animate-slide-up">
                 <p className="text-primary-200 text-base font-medium mb-1">
-                  旅程已结束
+                  {session.endReason === 'player_ended' ? '旅程已主动结束' : '旅程已结束'}
                 </p>
                 <p className="text-gray-400 text-sm mb-4">
-                  你的冒险故事已经画上句号，现在可以生成一部专属传记来记录这段传奇。
+                  {session.endReason === 'player_ended'
+                    ? '你选择了在此处停下脚步。可以生成传记记录这段旅程，或稍后再说。'
+                    : '你的冒险故事已经画上句号，现在可以生成一部专属传记来记录这段传奇。'}
                 </p>
-                <button
-                  onClick={generateBiography}
-                  className="btn-primary"
-                >
-                  生成传记
-                </button>
+                {!session.biography ? (
+                  <button
+                    onClick={generateBiography}
+                    className="btn-primary"
+                  >
+                    生成传记
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => useGameStore.getState().setScreen('biography')}
+                    className="btn-primary"
+                  >
+                    查看传记
+                  </button>
+                )}
               </div>
             )}
           </div>

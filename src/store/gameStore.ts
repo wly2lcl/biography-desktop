@@ -49,6 +49,7 @@ interface GameState {
   loadingText: string;
   error: string | null;
   showConfirmEnd: boolean;
+  showConfirmBio: boolean;
 
   // Engine & storage
   engine: GameEngine;
@@ -79,7 +80,8 @@ interface GameState {
   startSystemGame: () => Promise<void>;
   makeChoice: (choiceId: string) => Promise<void>;
   generateBiography: () => Promise<void>;
-  endGame: () => void;
+  endGame: (generateBio?: boolean) => void;
+  skipBiography: () => void;
   newGame: () => void;
   checkResume: () => Promise<void>;
   deleteSession: (sessionId: string) => Promise<void>;
@@ -91,6 +93,7 @@ interface GameState {
   // Actions - utility
   setError: (error: string | null) => void;
   setShowConfirmEnd: (show: boolean) => void;
+  setShowConfirmBio: (show: boolean) => void;
   appendStreamedText: (text: string) => void;
 }
 
@@ -169,6 +172,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   loadingText: '',
   error: null,
   showConfirmEnd: false,
+  showConfirmBio: false,
 
   engine: new GameEngine(),
   storage: createStorage(),
@@ -525,6 +529,12 @@ export const useGameStore = create<GameState>((set, get) => ({
       // Biography needs more output tokens (2000-4000 Chinese characters)
       const bioLlmConfig = { ...llmConfig, maxTokens: 8192 };
 
+      // Determine if the journey ended naturally or was stopped mid-way
+      const isComplete = session.endReason === 'story_ending'
+        || session.endReason === 'max_choices'
+        || session.endReason === 'max_history'
+        || !session.endReason; // no endReason means natural/complete end
+
       let worldContent = '';
       try {
         worldContent = await loadBuiltInWorld(session.world, 'single');
@@ -541,10 +551,11 @@ export const useGameStore = create<GameState>((set, get) => ({
       const worldThemes = prompts.extractWorldThemes(worldContent);
       const biographyHistory = prompts.formatHistoryForBiography(
         session.player.history,
-        session.player.summary
+        session.player.summary,
+        isComplete
       );
 
-      const bioPrompt = prompts.format(prompts.biographyPrompt(), {
+      const bioPrompt = prompts.format(prompts.biographyPrompt(isComplete), {
         world_context: worldThemes,
         system_context: session.system || '',
         player_name: session.player.name,
@@ -577,15 +588,21 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
   },
 
-  endGame: () => {
-    set({ showConfirmEnd: false });
+  endGame: (generateBio = true) => {
+    set({ showConfirmEnd: false, showConfirmBio: false });
     const { session, storage } = get();
     if (session) {
       session.isActive = false;
+      session.endReason = 'player_ended';
       storage.saveSession(session);
     }
-    // Go to biography
-    get().generateBiography();
+    if (generateBio) {
+      get().generateBiography();
+    }
+  },
+
+  skipBiography: () => {
+    set({ showConfirmBio: false, currentScreen: 'start' });
   },
 
   newGame: () => {
@@ -724,6 +741,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   // Utility actions
   setError: (error) => set({ error }),
   setShowConfirmEnd: (show) => set({ showConfirmEnd: show }),
+  setShowConfirmBio: (show) => set({ showConfirmBio: show }),
   appendStreamedText: (text) =>
     set((state) => ({ streamedText: state.streamedText + text })),
 }));

@@ -36,6 +36,9 @@ export interface PlayerState {
   createdAt: string;
 }
 
+/** Reason why a journey ended */
+export type EndReason = 'player_ended' | 'story_ending' | 'max_choices' | 'max_history';
+
 export interface GameSession {
   sessionId: string;
   world: string;
@@ -44,6 +47,7 @@ export interface GameSession {
   player: PlayerState;
   scenarios: Scenario[];
   isActive: boolean;
+  endReason?: EndReason;
   biography?: string;
   createdAt: string;
 }

@@ -151,6 +151,55 @@ describe('PromptManager.formatHistoryForBiography', () => {
     const result = prompts.formatHistoryForBiography(history, 'My summary');
     expect(result).toContain('My summary');
   });
+
+  it('should append journey status when isComplete=false', () => {
+    const history = [
+      { scenario: 'S1', scenarioDescription: 'desc1', choice: 'C1', choiceId: '1' },
+    ];
+    const result = prompts.formatHistoryForBiography(history, '', false);
+    expect(result).toContain('旅程状态');
+    expect(result).toContain('尚未完结');
+  });
+
+  it('should not append journey status when isComplete=true (default)', () => {
+    const history = [
+      { scenario: 'S1', scenarioDescription: 'desc1', choice: 'C1', choiceId: '1' },
+    ];
+    const result = prompts.formatHistoryForBiography(history);
+    expect(result).not.toContain('旅程状态');
+  });
+});
+
+describe('PromptManager.biographyPrompt', () => {
+  it('should return complete prompt when isComplete=true (default)', () => {
+    const result = prompts.biographyPrompt(true);
+    expect(result).toContain('传记结构');
+    expect(result).not.toContain('未完待续');
+    expect(result).not.toContain('尚未完结');
+  });
+
+  it('should return incomplete variant with 未完待续 instruction when isComplete=false', () => {
+    const result = prompts.biographyPrompt(false);
+    expect(result).toContain('尚未完结');
+    expect(result).toContain('未完待续');
+    expect(result).toContain('不要编造旅途结束后的情节');
+  });
+
+  it('should default to complete mode when no argument', () => {
+    const defaultResult = prompts.biographyPrompt();
+    const explicitResult = prompts.biographyPrompt(true);
+    expect(defaultResult).toBe(explicitResult);
+  });
+
+  it('should include all original structure in incomplete variant', () => {
+    const incomplete = prompts.biographyPrompt(false);
+    // Incomplete variant should still have the base structure
+    expect(incomplete).toContain('传记结构');
+    expect(incomplete).toContain('引言');
+    expect(incomplete).toContain('主体');
+    expect(incomplete).toContain('转折点');
+    expect(incomplete).toContain('结语');
+  });
 });
 
 describe('PromptManager.extractWorldThemes', () => {

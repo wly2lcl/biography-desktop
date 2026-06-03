@@ -167,11 +167,13 @@ export class GameEngine {
 
     if (choiceId === 'end') {
       session.isActive = false;
+      session.endReason = 'player_ended';
       return { session };
     }
 
     if (choiceId === 'end_journey') {
       session.isActive = false;
+      session.endReason = 'player_ended';
       return { session };
     }
 
@@ -281,11 +283,13 @@ export class GameEngine {
   ): Promise<unknown> {
     if (session.player.history.length >= this.config.maxChoices) {
       session.isActive = false;
+      session.endReason = 'max_choices';
       return this.endingScenario('legend');
     }
 
     if (session.player.history.length > this.config.maxHistoryHardCap) {
       session.isActive = false;
+      session.endReason = 'max_history';
       return this.endingScenario('legend');
     }
 
@@ -343,6 +347,7 @@ export class GameEngine {
       const ending = typed.ending as { type: string; description: string };
       if (ending.type) {
         session.isActive = false;
+        session.endReason = 'story_ending';
         this.ensureEndChoice(nextScenario, ending);
       }
     }

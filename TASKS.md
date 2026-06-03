@@ -1,6 +1,6 @@
 # Biography Desktop - 任务清单
 
-> 最后更新: 2026-06-02（最终：所有可完成代码任务已全部完成）
+> 最后更新: 2026-06-03（Phase 7 传记生成改进已全部完成）
 
 ---
 
@@ -392,12 +392,12 @@
 
 | 状态 | 数量 | 占比 |
 |------|------|------|
-| 🔲 待开始 | 3 | 2% |
+| 🔲 待开始 | 3 | 1% |
 | 🔨 进行中 | 0 | 0% |
-| ✅ 已完成 | 176 | 93% |
-| ⏸️ 已暂停 | 5 | 3% |
+| ✅ 已完成 | 188 | 93% |
+| ⏸️ 已暂停 | 5 | 2% |
 | ❌ 已取消 | 6 | 3% |
-| **总计** | **190** | **100%** |
+| **总计** | **202** | **100%** |
 
 ### 预估工作量
 
@@ -414,6 +414,44 @@
 | P2 长期优化 | ~2.5 天（7/8 完成） |
 | **实际完成** | **约 16-17 天** |
 | **剩余工作量** | **仅 4 项集成测试（需 Tauri+LLM 运行环境）** |
+
+---
+
+## Phase 7: 传记生成改进（预估 0.5 天）
+
+### 7.1 类型与引擎
+
+| # | 任务 | 优先级 | 状态 | 预估 | 实际 | 备注 |
+|---|------|--------|------|------|------|------|
+| T400 | 新增 `EndReason` 类型定义 | P0 | ✅ | 5min | - | src/types/models.ts |
+| T401 | `GameSession` 增加 `endReason` 字段 | P0 | ✅ | 5min | - | src/types/models.ts |
+| T402 | `processChoice()` 设置 `endReason` | P0 | ✅ | 30min | - | src/game/engine.ts:player_ended |
+| T403 | `applyNextScenario()` 设置自然结束 `endReason` | P0 | ✅ | 30min | - | src/game/engine.ts:story_ending |
+
+### 7.2 状态管理与传记生成
+
+| # | 任务 | 优先级 | 状态 | 预估 | 实际 | 备注 |
+|---|------|--------|------|------|------|------|
+| T410 | `endGame()` 改为可选生成传记 | P0 | ✅ | 30min | - | src/store/gameStore.ts |
+| T411 | 新增 `showConfirmBio` 状态 | P0 | ✅ | 15min | - | src/store/gameStore.ts |
+| T412 | 新增 `skipBiography()` 动作 | P0 | ✅ | 15min | - | src/store/gameStore.ts |
+| T413 | `generateBiography()` 传入 `isComplete` | P0 | ✅ | 30min | - | 根据 endReason 判断 |
+
+### 7.3 提示词模板
+
+| # | 任务 | 优先级 | 状态 | 预估 | 实际 | 备注 |
+|---|------|--------|------|------|------|------|
+| T420 | `biographyPrompt()` 增加 `isComplete` 参数 | P0 | ✅ | 30min | - | src/services/prompts.ts |
+| T421 | 注入"未完待续"约束指令 | P0 | ✅ | 30min | - | isComplete=false 时追加 |
+| T422 | `formatHistoryForBiography()` 增加 `isComplete` | P0 | ✅ | 15min | - | 非完整时追加状态提示 |
+
+### 7.4 UI 流程
+
+| # | 任务 | 优先级 | 状态 | 预估 | 实际 | 备注 |
+|---|------|--------|------|------|------|------|
+| T430 | 两步确认流程（结束 → 生成传记） | P0 | ✅ | 1h | - | src/App.tsx |
+| T431 | 结束面板文案根据 endReason 区分 | P0 | ✅ | 30min | - | src/components/screens/GameScreen.tsx |
+| T432 | 新增 i18n 文案（8 条） | P1 | ✅ | 15min | - | src/i18n/locales/zh-CN.json |
 
 ---
 
@@ -454,10 +492,16 @@ Phase 5 (数据与配置) ✅ 100%
 │   ├── T195-T201 设置界面（LLM/高级/数据/关于） ✅
 │   ├── T210-T220 世界观管理（列表/新建/编辑/导入/导出/Rust commands） ✅（T217 P2 可选）
 │   └── T230-T240 本地数据管理（备份/恢复/会话管理/全量导入导出/Rust commands） ✅（T238/T239 已实现）
-│
+
 Phase 6 (测试与打包) ~90%
 ├── T300-T312 测试 ← Phase 2-5（TS 测试 ✅ 81 tests / 集成测试 🔲 需 Tauri+LLM / Rust 测试代码已写好 🔲 需 cargo run）
 │   └── T320-T325 打包（图标 ✅ / Linux .deb+.rpm ✅ / Windows CI/CD ✅ / macOS CI/CD ✅ / 产物验证 ✅）
+
+Phase 7 (传记生成改进) ✅ 100%
+├── T400-T403 类型 + 引擎（EndReason + 结束原因记录） ✅
+│   ├── T410-T413 状态管理（endGame 拆分 + showConfirmBio + skipBiography） ✅
+│   ├── T420-T422 提示词模板（isComplete 参数 + 未完待续指令） ✅
+│   └── T430-T432 UI 流程（两步确认 + 文案区分 + i18n） ✅
 ```
 
 > **注**: 剩余 4 项待完成任务全部为集成测试，需要 Tauri 运行时 + 真实 LLM API。所有代码 + 打包 + CI/CD 已全部完成。

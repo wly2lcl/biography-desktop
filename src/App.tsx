@@ -17,6 +17,7 @@ function App() {
     loadingText,
     error,
     showConfirmEnd,
+    showConfirmBio,
     showSettings,
     showWorldManager,
     setError,
@@ -79,14 +80,31 @@ function App() {
       {showConfirmEnd && (
         <ConfirmModal
           title="结束旅程"
-          message="确定要结束当前的旅程吗？你可以随时查看已生成的传记。"
+          message="确定要结束当前的旅程吗？"
           confirmText="结束旅程"
           cancelText="继续游戏"
           onConfirm={() => {
-            useGameStore.getState().endGame();
+            const store = useGameStore.getState();
+            store.endGame(false); // End journey without generating biography
+            store.setShowConfirmBio(true); // Show biography confirm
           }}
           onCancel={() => {
             useGameStore.getState().setShowConfirmEnd(false);
+          }}
+        />
+      )}
+      {showConfirmBio && (
+        <ConfirmModal
+          title="生成传记"
+          message="旅程已结束。是否现在生成专属传记？"
+          confirmText="生成传记"
+          cancelText="返回主页"
+          onConfirm={() => {
+            useGameStore.getState().setShowConfirmBio(false);
+            useGameStore.getState().generateBiography();
+          }}
+          onCancel={() => {
+            useGameStore.getState().skipBiography();
           }}
         />
       )}
