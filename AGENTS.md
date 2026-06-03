@@ -5,6 +5,10 @@
 Tauri 2 桌面应用（React + TS + Rust + SQLite），LLM 驱动互动传记叙事。
 从 Python Web 版迁移而来，纯本地运行，无后端。
 
+## 开发原则
+
+**代码修改前，先修改对应文档**（DESIGN.md / DEV_GUIDE.md / TASKS.md / STATUS.md / 本文件），保持代码与文档一致。
+
 ## 关键命令
 
 ```bash
