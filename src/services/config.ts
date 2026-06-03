@@ -25,6 +25,13 @@ export const PRESET_PROVIDERS = [
     model: 'qwen2.5',
     description: '完全免费，本地运行',
   },
+  {
+    id: 'llamacpp',
+    name: 'llama.cpp（本地）',
+    baseUrl: 'http://localhost:8080',
+    model: 'Qwen3-8B',
+    description: '完全免费，本地运行',
+  },
 ];
 
 /**
@@ -102,12 +109,16 @@ export async function testConnection(
     // Normalize: strip trailing /v1 to avoid duplication
     const normalized = baseUrl.replace(/\/v1\/?$/, '');
 
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (apiKey) {
+      headers['Authorization'] = `Bearer ${apiKey}`;
+    }
+
     const response = await fetch(`${normalized}/v1/chat/completions`, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
+      headers,
       body: JSON.stringify({
         model,
         messages: [{ role: 'user', content: 'Hi' }],

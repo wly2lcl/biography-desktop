@@ -198,6 +198,55 @@ export default {
 □ 6.1 单元测试（parser, sse, prompts）
 □ 6.2 集成测试（完整游戏流程）
 □ 6.3 设置界面测试（API Key 验证 + 测试连接）
+```
+
+### Phase 8: llama.cpp 本地模型支持（第 12 天）
+
+```
+□ 8.1 类型系统新增 'llamacpp' 选项 (settings.ts)
+□ 8.2 PRESET_PROVIDERS 新增 llama.cpp preset (config.ts)
+□ 8.3 streamChat() 空 apiKey 处理 (llm.ts)
+□ 8.4 SettingsScreen UI 新增选项
+□ 8.5 本地测试验证（需 llama-server 运行）
+```
+
+#### llama.cpp 使用指南
+
+**1. 下载并编译 llama.cpp**
+
+```bash
+git clone https://github.com/ggml-org/llama.cpp.git
+cd llama.cpp
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release -j
+```
+
+**2. 下载 GGUF 模型（推荐 7B-14B 参数量）**
+
+```bash
+# 示例：下载 Qwen3-8B 量化版
+huggingface-cli download Qwen/Qwen3-8B-GGUF qwen3-8b-q4_k_m.gguf --local-dir models/
+```
+
+**3. 启动 llama-server**
+
+```bash
+./build/bin/llama-server -m models/qwen3-8b-q4_k_m.gguf \
+  --port 8080 \
+  --host 0.0.0.0 \
+  --ctx-size 8192 \
+  --parallel 1
+```
+
+**4. 应用配置**
+
+进入 Settings → LLM → 选择 `llama.cpp` → 确认基础 URL 为 `http://localhost:8080` → 模型名称填写模型名 → API Key 留空 → 开始游戏。
+
+**注意事项**：
+- 首次加载模型到内存可能需要 10-30 秒，建议增大 timeout 设置
+- 推荐 GPU 推理（CUDA/Metal），CPU 推理速度较慢
+- 模型量化推荐 Q4_K_M 或 Q5_K_M（质量/速度平衡）
+- 小参数模型可能 JSON 格式输出不稳定，应用已有容错解析可处理
 □ 6.4 世界观管理测试（导入/导出/编辑/删除）
 □ 6.5 数据备份/恢复测试
 □ 6.6 Windows 打包测试

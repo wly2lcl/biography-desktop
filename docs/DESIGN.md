@@ -493,6 +493,49 @@ function formatHistory(history: HistoryEntry[], summary?: string): string {
 > **所有 LLM 内容生成均走流式**，不保留非流式 `chat()` 函数。
 > 所有场景统一使用 `streamChat()` 逐字实时渲染，不封装任何"等待完成再返回"的变体。
 
+#### OpenAI 兼容协议
+
+所有提供商（DeepSeek / OpenAI / Ollama / llama.cpp）统一使用 **OpenAI Chat Completions API** 协议：
+- 端点: `{baseUrl}/v1/chat/completions`
+- 请求体: `{ model, messages, temperature, max_tokens, stream: true }`
+- 响应: SSE 流式格式 `data: {"choices":[{"delta":{"content":"..."}}]}`
+- 终止标记: `data: [DONE]`
+
+这意味着**任何兼容 OpenAI API 的本地/远程服务**均可直接接入，无需额外适配层。
+
+#### llama.cpp 本地模型支持（Phase 8）
+
+llama.cpp 的 `llama-server` 原生提供 OpenAI 兼容接口，接入方式与 Ollama 完全一致：
+
+```bash
+# 启动 llama.cpp 服务
+./llama-server -m models/Qwen3-8B.gguf --port 8080 --host 0.0.0.0
+```
+
+**与云端提供商的差异**：
+
+| 特性 | 云端 (DeepSeek/OpenAI) | 本地 (llama.cpp) |
+|------|----------------------|-----------------|
+| 端点 | `https://api.*.com/v1` | `http://localhost:8080/v1` |
+| API Key | 必须 | 不需要（可留空） |
+| 网络依赖 | 需要互联网 | 完全离线 |
+| 速度 | 快（GPU 集群） | 取决于本地硬件 |
+| 隐私 | 请求发送至第三方 | 100% 本地处理 |
+| 模型选择 | 固定可用模型 | 用户自选 GGUF 模型 |
+
+**Authorization header 处理**：
+当 `apiKey` 为空时，不发送 `Authorization` header（llama.cpp 默认不验证 key）：
+
+```typescript
+// src/services/llm.ts
+const headers: Record<string, string> = {
+  'Content-Type': 'application/json',
+};
+if (config.apiKey) {
+  headers['Authorization'] = `Bearer ${config.apiKey}`;
+}
+```
+
 ```typescript
 // src/services/llm.ts
 
@@ -1246,7 +1289,7 @@ export const PRESET_PROVIDERS = [
 
 export interface AppSettings {
   // LLM
-  llmProvider: 'deepseek' | 'openai' | 'ollama' | 'custom';
+  llmProvider: 'deepseek' | 'openai' | 'ollama' | 'llamacpp' | 'custom';
   apiKey: string;           // Tauri: keyring / Web: localStorage
   baseUrl: string;
   model: string;

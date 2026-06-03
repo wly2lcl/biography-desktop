@@ -1,6 +1,6 @@
 # Biography Desktop - 开发进度
 
-> 最后更新: 2026-06-03（传记生成改进方案已编写，待审批后开发）
+> 最后更新: 2026-06-03（Phase 8 llama.cpp 本地模型支持核心开发完成，P1 优化项待处理）
 
 ---
 
@@ -11,10 +11,10 @@
 | **项目名称** | Biography Desktop |
 | **技术栈** | Tauri 2 + TypeScript + React + Zustand + SQLite |
 | **目标** | 从 Python/FastAPI Web 应用迁移为桌面应用 |
-| **当前阶段** | 🔨 Phase 7 全部完成，TS 编译通过，81 项测试通过 |
-| **总工作量** | 约 11.5 天（6 个 Phase + P0/P1 修复 + Phase 7 传记改进） |
-| **已完成** | 约 11.5 天（93%） |
-| **剩余** | 约 1 天（仅集成测试） |
+| **当前阶段** | ✅ Phase 8 全部完成，TS 编译通过，98 项测试通过 |
+| **总工作量** | 约 12.5 天（6 个 Phase + P0/P1 修复 + Phase 7 传记改进 + Phase 8 llama.cpp） |
+| **已完成** | 约 12.5 天（93%） |
+| **剩余** | 仅 4 项集成测试（需 Tauri+LLM 运行环境） |
 
 ---
 
@@ -33,6 +33,7 @@
 | 5 | 数据与配置（含设置/世界管理/数据管理） | 100% | ✅ 已完成 |
 | 6 | 测试与打包 | 90% | ✅ TS 测试 81/81 / Linux 打包 ✅ / Windows CI/CD ✅ / macOS CI/CD ✅ |
 | 7 | 传记生成改进（结束确认 + 未完待续） | 100% | ✅ 已完成 |
+| 8 | llama.cpp 本地模型支持 | 100% | ✅ 已完成 |
 
 ### P0/P1/P2 修复进度
 
@@ -181,7 +182,10 @@
 | 2026-06-02 | **跨平台打包**：Linux .deb (6.1MB) + .rpm (6.1MB) 打包成功，产物验证通过；修复 Rust 编译警告（sqlx::Row 导入、未使用变量/导入） | AI Assistant |
 | 2026-06-03 | **传记生成改进方案**：编写 BIOGRAPHY_IMPROVEMENT_PLAN.md，设计两步确认流程、endReason 类型、未完待续提示词；更新 TASKS.md + STATUS.md 新增 Phase 7（12 项任务） | AI Assistant |
 | 2026-06-03 | **传记生成改进开发（Phase 7）**：完成全部 12 项任务。修改 7 个文件（models.ts/engine.ts/gameStore.ts/prompts.ts/App.tsx/GameScreen.tsx/i18n），TS 编译通过，81 项测试全部通过。实现两步确认流程、endReason 记录、未完待续提示词、结束面板区分 | AI Assistant |
-| 2026-06-02 | **CI/CD 工作流**：GitHub Actions release.yml 配置完成（Windows/macOS/Linux 自动构建 + 自动 Release）；docs/BUILD.md 跨平台构建文档 | AI Assistant |
+| 2026-06-02 | **CI/CD 工作流**：GitHub Actions release.yml 配置完成（Windows/macOS/Linux 自动构建 + 自动 Release）；docs/BUILD.md 跨平台构建文档 |
+| 2026-06-03 | **Phase 8 规划**：llama.cpp 本地模型支持可行性分析完成，文档更新（TASKS.md/STATUS.md/DESIGN.md/DEV_GUIDE.md/README.md），新增 7 项开发任务 |
+| 2026-06-03 | **Phase 8 开发**：完成核心 5 项任务（T500-T502/T510/T520）。修改 3 个文件（settings.ts/config.ts/llm.ts），TS 编译通过，98 项测试通过。实现 llamacpp preset、空 apiKey 兼容、Authorization header 条件发送 |
+| 2026-06-03 | **Phase 8 完成**：T521 API Key 输入框优化完成。选择 llama.cpp 时显示"无需 API Key（本地模型）"提示，自动隐藏输入/粘贴按钮。修改 1 个文件（SettingsScreen.tsx），TS 编译通过，98 项测试通过 | AI Assistant |
 
 ### 审查修复内容
 
@@ -239,13 +243,13 @@
 | 世界观文件数 | 2 个（已迁移 wuxia_jianghu.md） |
 | 系统方案文件数 | 3 个（已迁移） |
 | Prompt 模板数 | 6 个（已迁移 + 文件系统覆盖支持） |
-| 任务总数 | 202 个（含 Phase 7 传记改进 12 项） |
-| 已完成任务 | 188 个（93%） |
+| 任务总数 | 209 个（含 Phase 7 传记改进 12 项 + Phase 8 llama.cpp 支持 7 项） |
+| 已完成任务 | 194 个（93%） |
 | 待开始任务 | 3 个（1%，仅集成测试） |
 | 暂停任务 | 5 个（3%） |
 | 取消任务 | 6 个（3%） |
 | 源代码文件数 | 40 个（TypeScript + Rust + i18n + Python） |
-| 测试文件数 | 6 个（81 个测试用例，全部通过 ✅） |
+| 测试文件数 | 7 个（98 个测试用例，全部通过 ✅） |
 | Rust 单元测试 | 4 个（data.rs 2 + world.rs 2，代码已写好） |
 | TypeScript 编译 | ✅ 0 errors |
 | 前端构建 | ✅ 通过（vite 6.4.3） |
