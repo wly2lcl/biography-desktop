@@ -247,6 +247,25 @@ huggingface-cli download Qwen/Qwen3-8B-GGUF qwen3-8b-q4_k_m.gguf --local-dir mod
 - 推荐 GPU 推理（CUDA/Metal），CPU 推理速度较慢
 - 模型量化推荐 Q4_K_M 或 Q5_K_M（质量/速度平衡）
 - 小参数模型可能 JSON 格式输出不稳定，应用已有容错解析可处理
+
+### Phase 9: llama.cpp 本地模型运行能力（第 13-15 天）
+
+> 🚧 设计阶段，详见 [docs/PHASE9_LOCAL_MODEL.md](PHASE9_LOCAL_MODEL.md)
+
+本 Phase 将从"用户手动启动 llama-server"升级为"应用内置模型运行能力"：
+
+```
+□ 9.1 Rust 侧二进制自动下载（GitHub Releases）
+□ 9.2 llama-server 进程管理（启动/停止/状态监控）
+□ 9.3 模型下载与管理（Qwen3 4B/8B, Llama 3.2 3B）
+□ 9.4 Settings "本地模型" Tab（状态/列表/下载进度/GPU配置）
+□ 9.5 LLM 客户端适配（自动路由到内部端口）
+□ 9.6 应用退出自动清理进程
+```
+
+**目标体验**：用户无需任何命令行操作，在 Settings 中选择模型 → 点击下载 → 等待完成 → 点击启动 → 即可开始游戏。
+
+```
 □ 6.4 世界观管理测试（导入/导出/编辑/删除）
 □ 6.5 数据备份/恢复测试
 □ 6.6 Windows 打包测试
