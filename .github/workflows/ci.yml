@@ -22,12 +22,19 @@ jobs:
           cache: 'npm'
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: i686-pc-windows-msvc
       - name: Install dependencies
         run: npm ci
-      - name: Build
+      - name: Build x64
         run: npx tauri build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build x86
+        run: npx tauri build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_TARGET_TRIPLE: i686-pc-windows-msvc
 
   build-macos:
     runs-on: macos-latest
