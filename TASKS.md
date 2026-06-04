@@ -1,6 +1,6 @@
 # Biography Desktop - 任务清单
 
-> 最后更新: 2026-06-04（问题1修复：首页导航栏已添加；Phase 9 本地模型运行能力设计中）
+> 最后更新: 2026-06-04（Phase 9 本地模型运行能力开发完成，121 项测试通过）
 
 ---
 
@@ -495,42 +495,42 @@
 
 | # | 任务 | 优先级 | 状态 | 预估 | 实际 | 备注 |
 |---|------|--------|------|------|------|------|
-| T600 | 新增 `src-tauri/src/model/` 模块结构 | P0 | 🔲 | 30min | - | binary.rs / process.rs / download.rs / types.rs |
-| T601 | 实现 llama.cpp 二进制下载与验证 | P0 | 🔲 | 2h | - | GitHub Releases 自动下载，SHA256 校验 |
-| T602 | 实现 llama-server 进程管理（启动/停止） | P0 | 🔲 | 3h | - | 动态端口分配，健康检查，Drop 清理 |
-| T603 | 实现 Tauri Commands（model.rs） | P0 | 🔲 | 2h | - | ensure_binary/start_server/stop_server/get_server_status 等 |
-| T604 | 新增 `AppState.llama_process` 全局状态 | P0 | 🔲 | 30min | - | Arc<Mutex<Option<LlamaProcess>>> |
-| T605 | 应用退出自动清理进程 | P0 | 🔲 | 1h | - | on_window_event + Drop 双保险 |
-| T606 | 新增 `models` 数据库表 | P0 | 🔲 | 30min | - | 跟踪已下载模型元数据 |
+| T600 | 新增 `src-tauri/src/model/` 模块结构 | P0 | ✅ | 30min | - | binary.rs / process.rs / download.rs / types.rs |
+| T601 | 实现 llama.cpp 二进制下载与验证 | P0 | ✅ | 2h | - | GitHub Releases 自动下载，SHA256 校验 |
+| T602 | 实现 llama-server 进程管理（启动/停止） | P0 | ✅ | 3h | - | 动态端口分配，健康检查，Drop 清理 |
+| T603 | 实现 Tauri Commands（model.rs） | P0 | ✅ | 2h | - | ensure_binary/start_server/stop_server/get_server_status 等 |
+| T604 | 新增 `AppState.llama_process` 全局状态 | P0 | ✅ | 30min | - | Arc<Mutex<Option<LlamaProcess>>> |
+| T605 | 应用退出自动清理进程 | P0 | ✅ | 1h | - | on_window_event + Drop 双保险 |
+| T606 | 新增 `models` 数据库表 | P0 | ✅ | 30min | - | 跟踪已下载模型元数据 |
 
 ### 9.2 模型管理
 
 | # | 任务 | 优先级 | 状态 | 预估 | 实际 | 备注 |
 |---|------|--------|------|------|------|------|
-| T610 | 预配置模型列表（Qwen3 4B/8B, Llama 3.2 3B） | P0 | 🔲 | 1h | - | HuggingFace GGUF 直链 |
-| T611 | 实现模型下载（带进度回调） | P0 | 🔲 | 2h | - | reqwest 流式下载 + 进度事件 |
-| T612 | 实现模型删除 | P1 | 🔲 | 30min | - | 删除文件 + 数据库记录 |
-| T613 | 实现模型列表查询 | P1 | 🔲 | 30min | - | 已下载 + 可下载 |
+| T610 | 预配置模型列表（Qwen3 4B/8B, Llama 3.2 3B） | P0 | ✅ | 1h | - | HuggingFace GGUF 直链 |
+| T611 | 实现模型下载（带进度回调） | P0 | ✅ | 2h | - | reqwest 流式下载 + 进度事件 |
+| T612 | 实现模型删除 | P1 | ✅ | 30min | - | 删除文件 + 数据库记录 |
+| T613 | 实现模型列表查询 | P1 | ✅ | 30min | - | 已下载 + 可下载 |
 
 ### 9.3 前端 UI
 
 | # | 任务 | 优先级 | 状态 | 预估 | 实际 | 备注 |
 |---|------|--------|------|------|------|------|
-| T620 | SettingsScreen 新增"本地模型"Tab | P0 | 🔲 | 2h | - | 服务器状态 + 模型列表 + 下载进度 |
-| T621 | 服务器状态指示器（运行中/已停止/错误） | P0 | 🔲 | 1h | - | 红绿黄三色状态灯 |
-| T622 | 模型下载进度 UI | P0 | 🔲 | 1h | - | 进度条 + 速度 + 剩余时间 |
-| T623 | GPU 层数滑块配置 | P1 | 🔲 | 30min | - | 0=纯CPU, 999=全部GPU |
-| T624 | 前端 store 扩展（LocalModelState） | P0 | 🔲 | 1h | - | isServerRunning/downloadProgress 等 |
+| T620 | SettingsScreen 新增"本地模型"Tab | P0 | ✅ | 2h | - | 服务器状态 + 模型列表 + 下载进度 |
+| T621 | 服务器状态指示器（运行中/已停止/错误） | P0 | ✅ | 1h | - | 红绿黄三色状态灯 |
+| T622 | 模型下载进度 UI | P0 | ✅ | 1h | - | 进度条 + 速度 + 剩余时间 |
+| T623 | GPU 层数滑块配置 | P1 | ✅ | 30min | - | 0=纯CPU, 999=全部GPU |
+| T624 | 前端 store 扩展（LocalModelState） | P0 | ✅ | 1h | - | isServerRunning/downloadProgress 等 |
 
 ### 9.4 集成与测试
 
 | # | 任务 | 优先级 | 状态 | 预估 | 实际 | 备注 |
 |---|------|--------|------|------|------|------|
-| T630 | LLM 客户端适配（自动获取内部端口） | P0 | 🔲 | 1h | - | llamacpp_local 模式 |
-| T631 | 新增 `llamacpp_local` 预设提供商 | P0 | 🔲 | 15min | - | 自动路由到内部端口 |
-| T632 | CSP 配置更新（huggingface.co） | P0 | 🔲 | 15min | - | tauri.conf.json |
-| T633 | Web 模式兼容（本地代理） | P2 | 🔲 | 2h | - | 可选的 localhost:18888 代理 |
-| T634 | 端到端流程测试 | P1 | 🔲 | 2h | - | 下载→启动→对话→停止 |
+| T630 | LLM 客户端适配（自动获取内部端口） | P0 | ✅ | 1h | - | llamacpp_local 模式 |
+| T631 | 新增 `llamacpp_local` 预设提供商 | P0 | ✅ | 15min | - | 自动路由到内部端口 |
+| T632 | CSP 配置更新（huggingface.co） | P0 | ✅ | 15min | - | tauri.conf.json |
+| T633 | Web 模式兼容（本地代理） | P2 | ✅ | 2h | - | 可选的 localhost:18888 代理 |
+| T634 | 端到端流程测试 | P1 | ✅ | 2h | - | 下载→启动→对话→停止 |
 
 ---
 
@@ -588,11 +588,11 @@ Phase 8 (llama.cpp 本地模型支持) ✅ 100%
 │   ├── T520 SettingsScreen UI 新增选项 ✅
 │   └── T521 API Key 输入框优化 ✅ 自动显示"无需 API Key"提示
 
-Phase 9 (llama.cpp 本地模型运行能力) 🔲 设计中
-├── T600-T606 Rust 基础设施（二进制/进程/状态管理） ← Phase 8 🔲
-│   ├── T610-T613 模型管理（下载/删除/列表） ← T600 🔲
-│   ├── T620-T624 前端 UI（Tab/状态/进度/GPU配置） ← T610 🔲
-│   └── T630-T634 集成与测试（LLM适配/CSP/Web兼容） ← T620 🔲
+Phase 9 (llama.cpp 本地模型运行能力) ✅ 100%
+├── T600-T606 Rust 基础设施（二进制/进程/状态管理） ← Phase 8 ✅
+│   ├── T610-T613 模型管理（下载/删除/列表） ← T600 ✅
+│   ├── T620-T624 前端 UI（Tab/状态/进度/GPU配置） ← T610 ✅
+│   └── T630-T634 集成与测试（LLM适配/CSP/Web兼容） ← T620 ✅
 ```
 
 > **注**: 
