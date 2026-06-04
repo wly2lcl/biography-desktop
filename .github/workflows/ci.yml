@@ -31,10 +31,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Build x86
-        run: npx tauri build
+        run: npx tauri build --target i686-pc-windows-msvc
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_TARGET_TRIPLE: i686-pc-windows-msvc
 
   build-macos:
     runs-on: macos-latest
