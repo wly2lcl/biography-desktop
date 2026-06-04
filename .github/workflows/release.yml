@@ -137,7 +137,8 @@ jobs:
             libxdo-dev \
             libssl-dev \
             libayatana-appindicator3-dev \
-            librsvg2-dev
+            librsvg2-dev \
+            rpm-build
       - name: Install frontend dependencies
         run: npm ci
       - name: Build
@@ -160,8 +161,57 @@ jobs:
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/rpm/*.rpm
 
+  build-linux-arm64:
+    needs: [prepare-release]
+    if: always() && (needs.prepare-release.result == 'success' || github.event_name == 'push')
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            rpm-build
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Build
+        run: npx tauri build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Rename artifacts
+        run: |
+          for f in src-tauri/target/release/bundle/deb/*.deb; do
+            mv "$f" "$(echo "$f" | sed 's/_arm64/_linux_arm64/')"
+          done
+          for f in src-tauri/target/release/bundle/rpm/*.rpm; do
+            mv "$f" "$(echo "$f" | sed 's/\([0-9]\.[0-9]\.[0-9]\)-/\1-linux-arm64-/')"
+          done
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm64-build
+          path: |
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/rpm/*.rpm
+
   release:
-    needs: [prepare-release, build-windows, build-macos, build-linux]
+    needs: [prepare-release, build-windows, build-macos, build-linux, build-linux-arm64]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -176,7 +226,7 @@ jobs:
           fi
       - name: Create Release
         uses: softprops/action-gh-release@v1
-        if: ${{ needs.build-windows.result == 'success' || needs.build-macos.result == 'success' || needs.build-linux.result == 'success' }}
+        if: ${{ needs.build-windows.result == 'success' || needs.build-macos.result == 'success' || needs.build-linux.result == 'success' || needs.build-linux-arm64.result == 'success' }}
         with:
           tag_name: ${{ steps.tag.outputs.name }}
           name: Release ${{ steps.tag.outputs.name }}
@@ -187,4 +237,6 @@ jobs:
             macos-build/**/*.dmg
             linux-build/**/*.deb
             linux-build/**/*.rpm
+            linux-arm64-build/**/*.deb
+            linux-arm64-build/**/*.rpm
           generate_release_notes: true
