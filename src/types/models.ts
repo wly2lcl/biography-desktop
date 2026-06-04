@@ -91,3 +91,41 @@ export interface AppConfig {
   maxTokens: number;
   timeout: number;
 }
+
+// Phase 9: Local model management types
+
+export interface ModelInfo {
+  id: string;
+  name: string;
+  provider: string;
+  size_gb: number;
+  quantization: string;
+  recommended: boolean;
+  download_url: string;
+  min_ram_gb: number;
+}
+
+export interface DownloadedModel {
+  id: string;
+  name: string;
+  file_path: string;
+  file_size: number;
+  downloaded_at: string;
+}
+
+export interface ServerStatus {
+  is_running: boolean;
+  pid: number | null;
+  port: number | null;
+  model_name: string | null;
+  context_size: number | null;
+  gpu_layers: number | null;
+}
+
+export interface ServerInfo {
+  pid: number;
+  port: number;
+  model_path: string;
+  model_name: string;
+  started_at: string;
+}

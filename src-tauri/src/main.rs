@@ -2,13 +2,19 @@
 
 mod commands;
 mod db;
+mod model;
 
+use commands::model::ModelAppState;
+use model::process::LlamaProcess;
 use sqlx::SqlitePool;
 use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
-struct AppDb {
-    pool: SqlitePool,
-    data_dir: PathBuf,
+#[derive(Clone)]
+pub(crate) struct AppDb {
+    pub(crate) pool: SqlitePool,
+    pub(crate) data_dir: PathBuf,
 }
 
 fn init_app() -> (SqlitePool, PathBuf) {
@@ -56,8 +62,35 @@ async fn main() {
     let (pool, data_dir) = init_app();
     let context = tauri::generate_context!();
 
+    // Create shared state for model management
+    let app_db = AppDb { pool, data_dir };
+    let model_state = ModelAppState {
+        db: app_db.clone(),
+        llama_process: Arc::new(Mutex::new(None::<LlamaProcess>)),
+    };
+
     tauri::Builder::default()
-        .manage(AppDb { pool, data_dir })
+        .manage(app_db)
+        .manage(model_state)
+        .setup(|app| {
+            let handle = app.handle().clone();
+            app.on_window_event(move |_window, event| {
+                if let tauri::WindowEvent::CloseRequested { .. } = event {
+                    // Clean up llama-server process on exit
+                    let handle = handle.clone();
+                    tokio::spawn(async move {
+                        let state = handle.try_state::<ModelAppState>();
+                        if let Some(state) = state {
+                            let mut proc = state.llama_process.lock().await;
+                            if proc.take().is_some() {
+                                log::info!("Cleaned up llama-server process on app exit");
+                            }
+                        }
+                    });
+                }
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::db::save_session,
             commands::db::get_session,
@@ -86,6 +119,17 @@ async fn main() {
             commands::data::import_full_data,
             commands::prompts::read_file,
             commands::prompts::write_file,
+            // Phase 9: Local model management
+            commands::model::ensure_binary,
+            commands::model::start_server,
+            commands::model::stop_server,
+            commands::model::get_server_status,
+            commands::model::list_available_models,
+            commands::model::list_downloaded_models,
+            commands::model::download_model,
+            commands::model::cancel_download,
+            commands::model::delete_model,
+            commands::model::get_models_dir,
         ])
         .run(context)
         .expect("error while running tauri application");

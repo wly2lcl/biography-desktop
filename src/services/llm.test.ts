@@ -314,9 +314,9 @@ describe('config.ts', () => {
   });
 
   describe('PRESET_PROVIDERS', () => {
-    it('has exactly 4 providers', async () => {
+    it('has exactly 5 providers', async () => {
       const { PRESET_PROVIDERS } = await import('./config');
-      expect(PRESET_PROVIDERS).toHaveLength(4);
+      expect(PRESET_PROVIDERS).toHaveLength(5);
     });
 
     it('includes deepseek with correct defaults', async () => {
@@ -347,6 +347,13 @@ describe('config.ts', () => {
       expect(lc.baseUrl).toBe('http://localhost:8080');
       expect(lc.model).toBe('Qwen3-8B');
       expect(lc.description).toContain('本地');
+    });
+
+    it('includes llamacpp_local for app-built-in model (Phase 9)', async () => {
+      const { PRESET_PROVIDERS } = await import('./config');
+      const lc = PRESET_PROVIDERS.find(p => p.id === 'llamacpp_local')!;
+      expect(lc).toBeDefined();
+      expect(lc.description).toContain('内置');
     });
   });
 

@@ -51,5 +51,19 @@ pub async fn init_db(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // Models table (Phase 9: local model management)
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS models (
+            model_id        TEXT PRIMARY KEY,
+            model_name      TEXT NOT NULL,
+            file_path       TEXT NOT NULL,
+            file_size       INTEGER NOT NULL,
+            downloaded_at   TEXT NOT NULL DEFAULT (datetime('now')),
+            last_used       TEXT
+        )",
+    )
+    .execute(pool)
+    .await?;
+
     Ok(())
 }

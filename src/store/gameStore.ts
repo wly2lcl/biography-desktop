@@ -8,6 +8,9 @@ import type {
   WorldInfo,
   AppConfig,
   SessionSummary,
+  ModelInfo,
+  DownloadedModel,
+  ServerStatus,
 } from '../types/models';
 import type { AppSettings } from '../types/settings';
 import { DEFAULT_SETTINGS } from '../types/settings';
@@ -55,6 +58,13 @@ interface GameState {
   engine: GameEngine;
   storage: ReturnType<typeof createStorage>;
 
+  // Phase 9: Local model management state
+  serverStatus: ServerStatus | null;
+  availableModels: ModelInfo[];
+  downloadedModels: DownloadedModel[];
+  downloadingModel: string | null;
+  downloadProgress: number;
+
   // Actions - screen
   setScreen: (screen: Screen) => void;
   setShowSettings: (show: boolean) => void;
@@ -72,6 +82,17 @@ interface GameState {
 
   // Actions - worlds
   loadWorlds: () => Promise<void>;
+
+  // Phase 9: Local model actions
+  refreshServerStatus: () => Promise<void>;
+  refreshAvailableModels: () => Promise<void>;
+  refreshDownloadedModels: () => Promise<void>;
+  startLocalServer: (modelPath: string, gpuLayers?: number, contextSize?: number) => Promise<void>;
+  stopLocalServer: () => Promise<void>;
+  startDownloadModel: (modelId: string) => Promise<void>;
+  cancelDownloadModel: () => Promise<void>;
+  deleteDownloadedModel: (modelId: string) => Promise<void>;
+  ensureBinary: () => Promise<string>;
 
   // Actions - game
   startBasicGame: (name: string, world: string, isBuiltIn: boolean, type: 'single' | 'directory') => Promise<void>;
@@ -176,6 +197,13 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   engine: new GameEngine(),
   storage: createStorage(),
+
+  // Phase 9: Local model initial state
+  serverStatus: null,
+  availableModels: [],
+  downloadedModels: [],
+  downloadingModel: null,
+  downloadProgress: 0,
 
   // Screen actions
   setScreen: (screen) => set({ currentScreen: screen }),
@@ -663,6 +691,159 @@ export const useGameStore = create<GameState>((set, get) => ({
       errorLogger.error('resumeGame failed', { sessionId }, err as Error);
       set({ error: formatErrorMessage(err, '恢复游戏失败') });
     }
+  },
+
+  // Phase 9: Local model actions
+  refreshServerStatus: async () => {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const status = await invoke('get_server_status') as ServerStatus;
+      set({ serverStatus: status });
+    } catch {
+      set({ serverStatus: { is_running: false, pid: null, port: null, model_name: null, context_size: null, gpu_layers: null } });
+    }
+  },
+
+  refreshAvailableModels: async () => {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const models = await invoke('list_available_models') as ModelInfo[];
+      set({ availableModels: models });
+    } catch (e) {
+      console.error('Failed to load available models:', e);
+    }
+  },
+
+  refreshDownloadedModels: async () => {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const models = await invoke('list_downloaded_models') as DownloadedModel[];
+      set({ downloadedModels: models });
+    } catch (e) {
+      console.error('Failed to load downloaded models:', e);
+    }
+  },
+
+  startLocalServer: async (modelPath: string, gpuLayers?: number, contextSize?: number) => {
+    set({ isLoading: true, loadingText: '正在启动本地模型服务...' });
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const info = await invoke('start_server', {
+        modelPath,
+        gpuLayers: gpuLayers ?? 0,
+        contextSize: contextSize ?? 4096,
+      }) as { port: number; model_name: string };
+
+      // Auto-configure LLM settings for local model
+      const modelName = info.model_name.replace(/\.gguf$/, '');
+      await get().updateSettings({
+        llmProvider: 'llamacpp_local',
+        baseUrl: `http://127.0.0.1:${info.port}`,
+        model: modelName,
+        apiKey: '',
+        timeout: 300000, // 5 min timeout for local model loading
+      });
+
+      await get().refreshServerStatus();
+      set({ isLoading: false, loadingText: '' });
+    } catch (err) {
+      set({
+        error: formatErrorMessage(err, '启动本地模型服务失败'),
+        isLoading: false,
+        loadingText: '',
+      });
+    }
+  },
+
+  stopLocalServer: async () => {
+    set({ isLoading: true, loadingText: '正在停止服务...' });
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('stop_server');
+      set({ serverStatus: null, isLoading: false, loadingText: '' });
+    } catch (err) {
+      set({
+        error: formatErrorMessage(err, '停止服务失败'),
+        isLoading: false,
+        loadingText: '',
+      });
+    }
+  },
+
+  startDownloadModel: async (modelId: string) => {
+    set({ downloadingModel: modelId, downloadProgress: 0 });
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const { listen } = await import('@tauri-apps/api/event');
+
+      // Listen for progress events
+      const unlistenProgress = await listen<{ model_id: string; progress: number }>(
+        'model_download_progress',
+        (event) => {
+          if (event.payload.model_id === modelId) {
+            set({ downloadProgress: event.payload.progress });
+          }
+        }
+      );
+
+      // Listen for completion events
+      const unlistenComplete = await listen<{ model_id: string; success: boolean; error?: string }>(
+        'model_download_complete',
+        async (event) => {
+          await unlistenProgress();
+          await unlistenComplete();
+          if (event.payload.success) {
+            set({ downloadingModel: null, downloadProgress: 0 });
+            await get().refreshDownloadedModels();
+          } else {
+            set({
+              downloadingModel: null,
+              downloadProgress: 0,
+              error: event.payload.error ?? '下载失败',
+            });
+          }
+        }
+      );
+
+      await invoke('download_model', { modelId });
+    } catch (err) {
+      set({
+        downloadingModel: null,
+        downloadProgress: 0,
+        error: formatErrorMessage(err, '下载模型失败'),
+      });
+    }
+  },
+
+  cancelDownloadModel: async () => {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('cancel_download');
+      set({ downloadingModel: null, downloadProgress: 0 });
+    } catch (e) {
+      console.error('Failed to cancel download:', e);
+    }
+  },
+
+  deleteDownloadedModel: async (modelId: string) => {
+    set({ isLoading: true, loadingText: '正在删除模型...' });
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('delete_model', { modelId });
+      await get().refreshDownloadedModels();
+      set({ isLoading: false, loadingText: '' });
+    } catch (err) {
+      set({
+        error: formatErrorMessage(err, '删除模型失败'),
+        isLoading: false,
+        loadingText: '',
+      });
+    }
+  },
+
+  ensureBinary: async () => {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke('ensure_binary') as Promise<string>;
   },
 
   // QA actions

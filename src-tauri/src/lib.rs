@@ -2,6 +2,7 @@
 
 pub mod commands;
 pub mod db;
+pub mod model;
 
 use sqlx::SqlitePool;
 use std::path::PathBuf;

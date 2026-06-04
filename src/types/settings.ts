@@ -1,6 +1,6 @@
 export interface AppSettings {
   // LLM
-  llmProvider: 'deepseek' | 'openai' | 'ollama' | 'llamacpp' | 'custom';
+  llmProvider: 'deepseek' | 'openai' | 'ollama' | 'llamacpp' | 'llamacpp_local' | 'custom';
   apiKey: string;
   baseUrl: string;
   model: string;

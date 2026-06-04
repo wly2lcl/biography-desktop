@@ -2,8 +2,9 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { useGameStore } from '@/store/gameStore';
 import { PRESET_PROVIDERS } from '@/services/config';
 import type { AppSettings } from '@/types/settings';
+import type { ModelInfo, DownloadedModel, ServerStatus } from '@/types/models';
 
-type TabId = 'llm' | 'advanced' | 'data' | 'about';
+type TabId = 'llm' | 'advanced' | 'localModel' | 'data' | 'about';
 
 interface TabDefinition {
   id: TabId;
@@ -13,6 +14,7 @@ interface TabDefinition {
 const TABS: TabDefinition[] = [
   { id: 'llm', label: 'LLM' },
   { id: 'advanced', label: '高级' },
+  { id: 'localModel', label: '本地模型' },
   { id: 'data', label: '数据' },
   { id: 'about', label: '关于' },
 ];
@@ -28,8 +30,14 @@ interface TempSettings extends AppSettings {
  * The LLM test-connection result is shown in-line.
  */
 export default function SettingsScreen() {
-  const { settings, updateSettings, testLlmConnection, setShowSettings } =
-    useGameStore();
+  const {
+    settings, updateSettings, testLlmConnection, setShowSettings,
+    serverStatus, availableModels, downloadedModels, downloadingModel, downloadProgress,
+    refreshServerStatus, refreshAvailableModels, refreshDownloadedModels,
+    startLocalServer, stopLocalServer,
+    startDownloadModel, cancelDownloadModel, deleteDownloadedModel,
+    ensureBinary,
+  } = useGameStore();
 
   const [activeTab, setActiveTab] = useState<TabId>('llm');
   const [draft, setDraft] = useState<TempSettings>(() => ({ ...settings }));
@@ -122,6 +130,13 @@ export default function SettingsScreen() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [setShowSettings]);
 
+  // ── Load local model data on mount ────────────────
+  useEffect(() => {
+    refreshServerStatus();
+    refreshAvailableModels();
+    refreshDownloadedModels();
+  }, []);
+
   // ── Generic number updater ─────────────────────────
   const updateNumber = (key: keyof TempSettings, value: string) => {
     const num = parseFloat(value);
@@ -187,6 +202,21 @@ export default function SettingsScreen() {
             <AdvancedTabContent
               draft={draft}
               onUpdateNumber={updateNumber}
+            />
+          )}
+          {activeTab === 'localModel' && (
+            <LocalModelTabContent
+              serverStatus={serverStatus}
+              availableModels={availableModels}
+              downloadedModels={downloadedModels}
+              downloadingModel={downloadingModel}
+              downloadProgress={downloadProgress}
+              onStartServer={startLocalServer}
+              onStopServer={stopLocalServer}
+              onStartDownload={startDownloadModel}
+              onCancelDownload={cancelDownloadModel}
+              onDeleteModel={deleteDownloadedModel}
+              onEnsureBinary={ensureBinary}
             />
           )}
           {activeTab === 'data' && (
@@ -312,7 +342,7 @@ function LlmTabContent({
       </fieldset>
 
       {/* API Key */}
-      {draft.llmProvider === 'llamacpp' ? (
+      {draft.llmProvider === 'llamacpp' || draft.llmProvider === 'llamacpp_local' ? (
         <div>
           <label className="block text-sm text-gray-300 mb-1.5 font-medium">
             API Key
@@ -749,6 +779,242 @@ function AboutTabContent() {
           </svg>
           GitHub
         </a>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════
+   本地模型 Tab
+   ══════════════════════════════════════════════════════════ */
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function LocalModelTabContent({
+  serverStatus,
+  availableModels,
+  downloadedModels,
+  downloadingModel,
+  downloadProgress,
+  onStartServer,
+  onStopServer,
+  onStartDownload,
+  onCancelDownload,
+  onDeleteModel,
+  onEnsureBinary,
+}: {
+  serverStatus: ServerStatus | null;
+  availableModels: ModelInfo[];
+  downloadedModels: DownloadedModel[];
+  downloadingModel: string | null;
+  downloadProgress: number;
+  onStartServer: (modelPath: string, gpuLayers?: number, contextSize?: number) => Promise<void>;
+  onStopServer: () => Promise<void>;
+  onStartDownload: (modelId: string) => Promise<void>;
+  onCancelDownload: () => Promise<void>;
+  onDeleteModel: (modelId: string) => Promise<void>;
+  onEnsureBinary: () => Promise<string>;
+}) {
+  const [gpuLayers, setGpuLayers] = useState(0);
+  const [binaryReady, setBinaryReady] = useState(false);
+  const [ensuring, setEnsuring] = useState(false);
+  const startingModelRef = useRef<string | null>(null);
+
+  // ── Ensure binary on mount ──────────────────────────
+  useEffect(() => {
+    onEnsureBinary().then(() => setBinaryReady(true)).catch(() => setBinaryReady(false));
+  }, []);
+
+  // ── Server start handler ────────────────────────────
+  const handleStartServer = useCallback(async (modelPath: string) => {
+    startingModelRef.current = modelPath;
+    await onStartServer(modelPath, gpuLayers);
+    startingModelRef.current = null;
+  }, [gpuLayers, onStartServer]);
+
+  const isRunning = serverStatus?.is_running ?? false;
+  const downloadedMap = new Map(downloadedModels.map((m) => [m.id, m]));
+
+  return (
+    <div className="space-y-5">
+      {/* ── Server Status ──────────────────────────── */}
+      <div className="glass-panel !bg-dark-800/50 p-4 space-y-2">
+        <h3 className="text-sm font-medium text-gray-200 mb-2">服务器状态</h3>
+        {isRunning ? (
+          <>
+            <InfoRow label="状态" value="运行中" />
+            {serverStatus?.port != null && (
+              <InfoRow label="端口" value={`http://localhost:${serverStatus.port}`} />
+            )}
+            {serverStatus?.model_name != null && (
+              <InfoRow label="模型" value={serverStatus.model_name} />
+            )}
+            {serverStatus?.gpu_layers != null && (
+              <InfoRow label="GPU 层数" value={String(serverStatus.gpu_layers)} />
+            )}
+            <button
+              type="button"
+              onClick={onStopServer}
+              className="btn-danger text-sm mt-2"
+            >
+              停止服务
+            </button>
+          </>
+        ) : (
+          <>
+            <p className="text-gray-500 text-sm">服务未运行</p>
+            {!binaryReady ? (
+              <div>
+                <p className="text-xs text-yellow-500 mb-2">正在检查二进制文件...</p>
+                <button
+                  type="button"
+                  disabled={ensuring}
+                  onClick={async () => {
+                    setEnsuring(true);
+                    try {
+                      await onEnsureBinary();
+                      setBinaryReady(true);
+                    } catch {
+                      setBinaryReady(false);
+                    }
+                    setEnsuring(false);
+                  }}
+                  className="btn-secondary text-sm"
+                >
+                  {ensuring ? '检查中...' : '检查二进制'}
+                </button>
+              </div>
+            ) : (
+              <p className="text-xs text-green-500">二进制文件就绪</p>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* ── GPU 层数 ──────────────────────────────── */}
+      <SliderField
+        id="local-model-gpu-layers"
+        label="GPU 加速层数（0 = 仅 CPU）"
+        min={0}
+        max={999}
+        step={1}
+        value={gpuLayers}
+        displayValue={String(gpuLayers)}
+        onChange={(v) => setGpuLayers(parseInt(v, 10) || 0)}
+      />
+
+      {/* ── 已下载模型 ─────────────────────────────── */}
+      <div>
+        <h3 className="text-sm font-medium text-gray-200 mb-2">已下载模型</h3>
+        {downloadedModels.length === 0 ? (
+          <p className="text-gray-500 text-sm">暂无已下载模型</p>
+        ) : (
+          <div className="space-y-2">
+            {downloadedModels.map((model) => (
+              <div
+                key={model.id}
+                className="flex items-center justify-between glass-panel !bg-dark-800/50 p-3"
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm text-gray-200 truncate">{model.name}</p>
+                  <p className="text-xs text-gray-500">
+                    {formatFileSize(model.file_size)}
+                  </p>
+                </div>
+                <div className="flex gap-2 shrink-0 ml-3">
+                  <button
+                    type="button"
+                    onClick={() => handleStartServer(model.file_path)}
+                    disabled={isRunning}
+                    className="btn-primary text-xs"
+                  >
+                    {isRunning && startingModelRef.current === model.file_path
+                      ? '启动中...'
+                      : '启动'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onDeleteModel(model.id)}
+                    className="btn-danger text-xs"
+                  >
+                    删除
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ── 可用模型 ──────────────────────────────── */}
+      <div>
+        <h3 className="text-sm font-medium text-gray-200 mb-2">可用模型</h3>
+        {availableModels.length === 0 ? (
+          <p className="text-gray-500 text-sm">暂无可用模型列表</p>
+        ) : (
+          <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+            {availableModels
+              .filter((m) => !downloadedMap.has(m.id))
+              .map((model) => {
+                const isDownloading = downloadingModel === model.id;
+                return (
+                  <div
+                    key={model.id}
+                    className="flex items-center justify-between glass-panel !bg-dark-800/50 p-3"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm text-gray-200 truncate">{model.name}</p>
+                        {model.recommended && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary-400/20 text-primary-300 shrink-0">
+                            推荐
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-gray-500">
+                        {model.size_gb}GB · {model.quantization}
+                        {model.min_ram_gb > 0 && ` · 最低 ${model.min_ram_gb}GB RAM`}
+                      </p>
+                    </div>
+                    <div className="shrink-0 ml-3">
+                      {isDownloading ? (
+                        <div className="flex items-center gap-2">
+                          <div className="w-20 h-1.5 bg-dark-800 rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-primary-500 rounded-full transition-all duration-300"
+                              style={{ width: `${downloadProgress}%` }}
+                            />
+                          </div>
+                          <span className="text-xs text-gray-400 w-8 text-right">
+                            {Math.round(downloadProgress)}%
+                          </span>
+                          <button
+                            type="button"
+                            onClick={onCancelDownload}
+                            className="btn-danger text-xs"
+                          >
+                            取消
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => onStartDownload(model.id)}
+                          className="btn-primary text-xs"
+                        >
+                          下载
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+          </div>
+        )}
       </div>
     </div>
   );

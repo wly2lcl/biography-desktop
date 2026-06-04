@@ -32,6 +32,13 @@ export const PRESET_PROVIDERS = [
     model: 'Qwen3-8B',
     description: '完全免费，本地运行',
   },
+  {
+    id: 'llamacpp_local',
+    name: 'llama.cpp（应用内置）',
+    baseUrl: '', // Auto-configured when local server starts
+    model: '',
+    description: '应用内置运行，一键启动',
+  },
 ];
 
 /**
