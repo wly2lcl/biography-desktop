@@ -4,12 +4,14 @@ import StreamedText from '@/components/common/StreamedText';
 import QAPanel from '@/components/qa/QAPanel';
 import { formatTimestamp } from '@/utils/format';
 import type { Choice, HistoryEntry } from '@/types/models';
+import { shouldStreamScenarioText } from './streamDisplay';
 
 export default function GameScreen() {
   const {
     session,
     currentScenario,
     isStreaming,
+    isQaStreaming,
     streamedText,
     makeChoice,
     setShowConfirmEnd,
@@ -140,7 +142,7 @@ export default function GameScreen() {
             )}
 
             {/* Description / Streamed text */}
-            {isStreaming ? (
+            {shouldStreamScenarioText(isStreaming, isQaStreaming) ? (
               <StreamedText text={streamedText} isStreaming />
             ) : (
               <div className="text-gray-200 text-base leading-relaxed whitespace-pre-wrap">

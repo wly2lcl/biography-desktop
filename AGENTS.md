@@ -69,7 +69,7 @@ npx vitest run src/services/prompts.test.ts  # 运行单个测试文件
 
 - 环境: happy-dom, globals: true
 - 匹配: `src/**/*.test.ts`, `src/**/*.test.tsx`
-- 当前门禁: 227 项前端测试、45 项 Rust 独立测试；全局行覆盖率不低于 65%
+- 当前门禁: 265 项前端测试、45 项 Rust 独立测试；全局行覆盖率不低于 65%
 
 ## CI/CD
 

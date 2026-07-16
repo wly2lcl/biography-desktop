@@ -17,12 +17,28 @@ const stableCsp = stable.app?.security?.csp ?? '';
 const experimentalCsp = experimental.app?.security?.csp ?? '';
 const experimentalEnv = readFileSync('.env.experimental', 'utf8');
 
-if (stableCsp.includes('localhost') || stableCsp.includes('127.0.0.1')) {
-  throw new Error('Stable CSP must not expose local model endpoints');
+function cspSources(csp, directive) {
+  const entry = csp.split(';')
+    .map((part) => part.trim())
+    .find((part) => part === directive || part.startsWith(`${directive} `));
+  return entry ? entry.split(/\s+/).slice(1) : [];
 }
-if (!experimentalCsp.includes('http://localhost:*')
-  || !experimentalCsp.includes('http://127.0.0.1:*')) {
-  throw new Error('Experimental CSP must allow both local model endpoint forms');
+
+const requiredConnectSources = [
+  "'self'",
+  'https:',
+  'http://localhost:*',
+  'http://127.0.0.1:*',
+  'http://[::1]:*',
+];
+for (const [name, csp] of [['Stable', stableCsp], ['Experimental', experimentalCsp]]) {
+  const sources = cspSources(csp, 'connect-src');
+  if (sources.includes('http:')) {
+    throw new Error(`${name} CSP must not allow arbitrary HTTP endpoints`);
+  }
+  if (!requiredConnectSources.every((source) => sources.includes(source))) {
+    throw new Error(`${name} CSP must allow HTTPS and explicit loopback HTTP endpoints`);
+  }
 }
 if (experimental.build?.beforeBuildCommand !== 'npm run build:experimental'
   || !experimentalEnv.includes('VITE_ENABLE_EXPERIMENTAL_PROVIDERS=true')) {

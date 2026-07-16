@@ -1,16 +1,22 @@
 // src/services/llm.ts - Stable cloud LLM adapters and streaming client
 
 import { parseSSE } from '../utils/sse';
+import type { LlmProvider } from '../types/settings';
 
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
 }
 
-export type StableLlmProvider = 'deepseek' | 'openai';
+export type StableLlmProvider = Extract<LlmProvider, 'deepseek' | 'openai'>;
+
+export const OFFICIAL_PROVIDER_BASE_URLS: Readonly<Record<StableLlmProvider, string>> = {
+  deepseek: 'https://api.deepseek.com',
+  openai: 'https://api.openai.com/v1',
+};
 
 export interface LLMConfig {
-  provider?: StableLlmProvider;
+  provider?: LlmProvider;
   apiKey: string;
   baseUrl: string;
   model: string;
@@ -20,6 +26,7 @@ export interface LLMConfig {
 }
 
 export type LLMErrorCode =
+  | 'invalid_config'
   | 'authentication'
   | 'rate_limit'
   | 'timeout'
@@ -41,25 +48,84 @@ export class LLMError extends Error {
 }
 
 export interface LlmProviderAdapter {
-  readonly id: StableLlmProvider;
+  readonly id: LlmProvider;
   createRequest(messages: LLMMessage[], config: LLMConfig, signal: AbortSignal): {
     url: string;
     init: RequestInit;
   };
 }
 
-function normalizeBaseUrl(baseUrl: string): string {
-  return baseUrl.replace(/\/+$/, '').replace(/\/v1$/, '');
+export type LlmBaseUrlValidationResult =
+  | { valid: true; resolvedBaseUrl: string }
+  | { valid: false; error: string };
+
+const LOOPBACK_HTTP_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+
+export function validateLlmBaseUrl(
+  baseUrl: string,
+  provider: LlmProvider
+): LlmBaseUrlValidationResult {
+  const trimmedBaseUrl = baseUrl.trim();
+  if (!trimmedBaseUrl) {
+    if (provider === 'deepseek' || provider === 'openai') {
+      return {
+        valid: true,
+        resolvedBaseUrl: OFFICIAL_PROVIDER_BASE_URLS[provider],
+      };
+    }
+    return {
+      valid: false,
+      error: provider === 'llamacpp_local'
+        ? '应用内置本地模型尚未启动，请先启动本地服务'
+        : '当前提供商必须填写 Base URL',
+    };
+  }
+  const candidate = trimmedBaseUrl;
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    return {
+      valid: false,
+      error: 'Base URL 格式无效，请填写完整的 HTTP(S) 地址',
+    };
+  }
+
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    return { valid: false, error: 'Base URL 仅支持 HTTP 或 HTTPS 协议' };
+  }
+  if (parsed.username || parsed.password) {
+    return { valid: false, error: 'Base URL 不能包含用户名或密码' };
+  }
+  if (parsed.search || parsed.hash) {
+    return { valid: false, error: 'Base URL 不能包含查询参数或片段标识' };
+  }
+  if (parsed.protocol === 'http:' && !LOOPBACK_HTTP_HOSTS.has(parsed.hostname.toLowerCase())) {
+    return {
+      valid: false,
+      error: '远程 Base URL 必须使用 HTTPS；HTTP 仅允许本机回环地址',
+    };
+  }
+
+  return { valid: true, resolvedBaseUrl: candidate };
 }
 
-function createOpenAICompatibleAdapter(id: StableLlmProvider): LlmProviderAdapter {
+function normalizeBaseUrl(baseUrl: string): string {
+  return baseUrl.trim().replace(/\/+$/, '').replace(/\/v1$/i, '');
+}
+
+function createOpenAICompatibleAdapter(id: LlmProvider): LlmProviderAdapter {
   return {
     id,
     createRequest(messages, config, signal) {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`;
+      const validation = validateLlmBaseUrl(config.baseUrl, id);
+      if (!validation.valid) {
+        throw new LLMError('invalid_config', validation.error);
+      }
       return {
-        url: `${normalizeBaseUrl(config.baseUrl)}/v1/chat/completions`,
+        url: `${normalizeBaseUrl(validation.resolvedBaseUrl)}/v1/chat/completions`,
         init: {
           method: 'POST',
           headers,
@@ -77,14 +143,34 @@ function createOpenAICompatibleAdapter(id: StableLlmProvider): LlmProviderAdapte
   };
 }
 
-export const LLM_PROVIDER_ADAPTERS: Readonly<Record<StableLlmProvider, LlmProviderAdapter>> = {
+export const LLM_PROVIDER_ADAPTERS: Readonly<Record<LlmProvider, LlmProviderAdapter>> = {
   deepseek: createOpenAICompatibleAdapter('deepseek'),
   openai: createOpenAICompatibleAdapter('openai'),
+  ollama: createOpenAICompatibleAdapter('ollama'),
+  llamacpp: createOpenAICompatibleAdapter('llamacpp'),
+  llamacpp_local: createOpenAICompatibleAdapter('llamacpp_local'),
+  custom: createOpenAICompatibleAdapter('custom'),
 };
 
 function selectAdapter(config: LLMConfig): LlmProviderAdapter {
-  const provider = config.provider
-    ?? (config.baseUrl.toLowerCase().includes('openai.com') ? 'openai' : 'deepseek');
+  if (config.provider) {
+    const adapter = (
+      LLM_PROVIDER_ADAPTERS as Partial<Record<string, LlmProviderAdapter>>
+    )[config.provider];
+    if (!adapter) {
+      throw new LLMError('invalid_config', `不支持的 LLM 提供商：${config.provider}`);
+    }
+    return adapter;
+  }
+  if (!config.baseUrl.trim()) {
+    throw new LLMError(
+      'invalid_config',
+      'Base URL 为空时必须明确选择 DeepSeek 或 OpenAI'
+    );
+  }
+  const provider = config.baseUrl.toLowerCase().includes('openai.com')
+    ? 'openai'
+    : 'deepseek';
   return LLM_PROVIDER_ADAPTERS[provider];
 }
 

@@ -1,3 +1,5 @@
+import type { LlmProvider } from './settings';
+
 export interface Choice {
   id: string;
   text: string;
@@ -98,7 +100,7 @@ export interface ChoiceResponse {
 }
 
 export interface AppConfig {
-  provider?: 'deepseek' | 'openai';
+  provider?: LlmProvider;
   apiKey: string;
   baseUrl: string;
   model: string;

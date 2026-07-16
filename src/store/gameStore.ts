@@ -55,6 +55,7 @@ interface GameState {
 
   // Streaming state
   isStreaming: boolean;
+  isQaStreaming: boolean;
   streamedText: string;
   activeRequestId: string | null;
   activeRequestController: AbortController | null;
@@ -149,7 +150,7 @@ function configToLlm(config: AppConfig): LLMConfig {
 /** Derive LLM config from settings */
 function settingsToConfig(s: AppSettings): AppConfig {
   return {
-    provider: s.llmProvider === 'openai' ? 'openai' : 'deepseek',
+    provider: s.llmProvider,
     apiKey: s.apiKey,
     baseUrl: s.baseUrl,
     model: s.model,
@@ -164,9 +165,7 @@ function settingsFromConfig(
   config: AppConfig,
   apiKey: string
 ): AppSettings {
-  const llmProvider = config.provider === 'openai' ? 'openai'
-    : config.provider === 'deepseek' ? 'deepseek'
-      : current.llmProvider;
+  const llmProvider = config.provider ?? current.llmProvider;
   return normalizeSettingsForBuild({
     ...current,
     llmProvider,
@@ -224,23 +223,25 @@ function mergeLegacyConfig(
     merged.timeout = legacy.timeout;
   }
 
-  const legacyUrl = typeof legacy.baseUrl === 'string' ? normalizeUrl(legacy.baseUrl) : '';
-  const provider = legacy.provider === 'deepseek' || legacy.provider === 'openai'
+  const legacyBaseUrl = typeof legacy.baseUrl === 'string' ? legacy.baseUrl.trim() : null;
+  const legacyUrl = legacyBaseUrl === null ? '' : normalizeUrl(legacyBaseUrl);
+  const explicitProvider = legacy.provider === 'deepseek' || legacy.provider === 'openai'
     ? legacy.provider
-    : legacyUrl === normalizeUrl(STABLE_CONFIG_PRESETS.openai.baseUrl)
+    : null;
+  const provider = explicitProvider
+    ?? (legacyUrl === normalizeUrl(STABLE_CONFIG_PRESETS.openai.baseUrl)
       ? 'openai'
       : legacyUrl === normalizeUrl(STABLE_CONFIG_PRESETS.deepseek.baseUrl)
         ? 'deepseek'
-        : null;
+        : null);
   if (!provider) return merged;
 
   const preset = STABLE_CONFIG_PRESETS[provider];
-  const usesOfficialEndpoint = legacyUrl === normalizeUrl(preset.baseUrl);
   return {
     ...merged,
     provider,
-    baseUrl: preset.baseUrl,
-    model: usesOfficialEndpoint && typeof legacy.model === 'string' && legacy.model.trim()
+    baseUrl: explicitProvider && legacyBaseUrl !== null ? legacyBaseUrl : preset.baseUrl,
+    model: typeof legacy.model === 'string' && legacy.model.trim()
       ? legacy.model.trim()
       : preset.model,
   };
@@ -250,6 +251,7 @@ function mergeLegacyConfig(
 function formatErrorMessage(err: unknown, defaultMsg: string): string {
   if (err instanceof LLMError) {
     const messages: Record<LLMError['code'], string> = {
+      invalid_config: err.message,
       authentication: 'API Key 无效或无权访问所选模型，请检查云端配置',
       rate_limit: '请求过于频繁或额度不足，请稍后重试',
       timeout: '请求超时，请检查网络或模型服务状态',
@@ -314,6 +316,7 @@ export const useGameStore = create<GameState>((set, get) => {
     get().activeRequestController?.abort();
     set({
       isStreaming: false,
+      isQaStreaming: false,
       streamedText: '',
       activeRequestId: null,
       activeRequestController: null,
@@ -338,6 +341,7 @@ export const useGameStore = create<GameState>((set, get) => {
   resumeWarning: null,
 
   isStreaming: false,
+  isQaStreaming: false,
   streamedText: '',
   activeRequestId: null,
   activeRequestController: null,
@@ -518,7 +522,12 @@ export const useGameStore = create<GameState>((set, get) => {
 
   testLlmConnection: async (draft) => {
     const settings = draft ?? get().settings;
-    return testConnection(settings.baseUrl, settings.apiKey, settings.model);
+    return testConnection(
+      settings.baseUrl,
+      settings.apiKey,
+      settings.model,
+      settings.llmProvider
+    );
   },
 
   // World actions
@@ -583,6 +592,7 @@ export const useGameStore = create<GameState>((set, get) => {
       currentScenario: placeholderScenario,
       currentScreen: 'game',
       isStreaming: true,
+      isQaStreaming: false,
       streamedText: '',
       activeRequestId: requestId,
       activeRequestController: requestController,
@@ -614,6 +624,7 @@ export const useGameStore = create<GameState>((set, get) => {
         session,
         currentScenario: session.scenarios[0],
         isStreaming: false,
+        isQaStreaming: false,
         streamedText: '',
         activeRequestId: null,
         activeRequestController: null,
@@ -624,6 +635,7 @@ export const useGameStore = create<GameState>((set, get) => {
         set({
           error: formatErrorMessage(err, '开始游戏失败'),
           isStreaming: false,
+          isQaStreaming: false,
           streamedText: '',
           activeRequestId: null,
           activeRequestController: null,
@@ -647,6 +659,7 @@ export const useGameStore = create<GameState>((set, get) => {
     set({
       currentScreen: 'system',
       isStreaming: true,
+      isQaStreaming: false,
       streamedText: '',
       systemProposals: [],
       selectedSystem: null,
@@ -675,6 +688,7 @@ export const useGameStore = create<GameState>((set, get) => {
       set({
         systemProposals: proposals,
         isStreaming: false,
+        isQaStreaming: false,
         streamedText: '',
         activeRequestId: null,
         activeRequestController: null,
@@ -684,6 +698,7 @@ export const useGameStore = create<GameState>((set, get) => {
         set({
           error: formatErrorMessage(err, '生成系统方案失败'),
           isStreaming: false,
+          isQaStreaming: false,
           streamedText: '',
           activeRequestId: null,
           activeRequestController: null,
@@ -747,6 +762,7 @@ export const useGameStore = create<GameState>((set, get) => {
       currentScenario: placeholderScenario,
       currentScreen: 'game',
       isStreaming: true,
+      isQaStreaming: false,
       streamedText: '',
       activeRequestId: requestId,
       activeRequestController: requestController,
@@ -778,6 +794,7 @@ export const useGameStore = create<GameState>((set, get) => {
         session: newSession,
         currentScenario: newSession.scenarios[0],
         isStreaming: false,
+        isQaStreaming: false,
         streamedText: '',
         selectedSystem: null,
         pendingStartParams: null,
@@ -789,6 +806,7 @@ export const useGameStore = create<GameState>((set, get) => {
         set({
           error: formatErrorMessage(err, '开始游戏失败'),
           isStreaming: false,
+          isQaStreaming: false,
           streamedText: '',
           pendingStartParams: null,
           activeRequestId: null,
@@ -808,6 +826,7 @@ export const useGameStore = create<GameState>((set, get) => {
     const workingSession = JSON.parse(JSON.stringify(session)) as GameSession;
     set({
       isStreaming: true,
+      isQaStreaming: false,
       streamedText: '',
       activeRequestId: requestId,
       activeRequestController: requestController,
@@ -835,6 +854,7 @@ export const useGameStore = create<GameState>((set, get) => {
         session: result.session,
         currentScenario: result.scenario || result.session.scenarios[result.session.scenarios.length - 1],
         isStreaming: false,
+        isQaStreaming: false,
         streamedText: '',
         activeRequestId: null,
         activeRequestController: null,
@@ -850,6 +870,7 @@ export const useGameStore = create<GameState>((set, get) => {
         set({
           error: formatErrorMessage(err, '处理选择失败'),
           isStreaming: false,
+          isQaStreaming: false,
           streamedText: '',
           activeRequestId: null,
           activeRequestController: null,
@@ -871,6 +892,7 @@ export const useGameStore = create<GameState>((set, get) => {
       session: { ...session, biography: '' },
       isLoading: false,
       isStreaming: true,
+      isQaStreaming: false,
       streamedText: '',
       activeRequestId: requestId,
       activeRequestController: requestController,
@@ -901,6 +923,7 @@ export const useGameStore = create<GameState>((set, get) => {
       set({
         session: workingSession,
         isStreaming: false,
+        isQaStreaming: false,
         streamedText: '',
         activeRequestId: null,
         activeRequestController: null,
@@ -911,6 +934,7 @@ export const useGameStore = create<GameState>((set, get) => {
         set({
           error: formatErrorMessage(err, '生成传记失败'),
           isStreaming: false,
+          isQaStreaming: false,
           streamedText: '',
           activeRequestId: null,
           activeRequestController: null,
@@ -926,6 +950,7 @@ export const useGameStore = create<GameState>((set, get) => {
       showConfirmEnd: false,
       showConfirmBio: false,
       isStreaming: false,
+      isQaStreaming: false,
       streamedText: '',
       activeRequestId: null,
       activeRequestController: null,
@@ -957,6 +982,7 @@ export const useGameStore = create<GameState>((set, get) => {
       showConfirmBio: false,
       currentScreen: 'start',
       isStreaming: false,
+      isQaStreaming: false,
       streamedText: '',
       activeRequestId: null,
       activeRequestController: null,
@@ -973,6 +999,7 @@ export const useGameStore = create<GameState>((set, get) => {
       selectedSystem: null,
       streamedText: '',
       isStreaming: false,
+      isQaStreaming: false,
       activeRequestId: null,
       activeRequestController: null,
     });
@@ -1246,6 +1273,7 @@ export const useGameStore = create<GameState>((set, get) => {
       session: updatedSession,
       streamedText: '',
       isStreaming: true,
+      isQaStreaming: true,
       activeRequestId: requestId,
       activeRequestController: requestController,
     });
@@ -1292,6 +1320,7 @@ export const useGameStore = create<GameState>((set, get) => {
         session: finalSession,
         streamedText: '',
         isStreaming: false,
+        isQaStreaming: false,
         activeRequestId: null,
         activeRequestController: null,
       });
@@ -1303,6 +1332,7 @@ export const useGameStore = create<GameState>((set, get) => {
           error: formatErrorMessage(err, '问答失败'),
           streamedText: '',
           isStreaming: false,
+          isQaStreaming: false,
           activeRequestId: null,
           activeRequestController: null,
         });

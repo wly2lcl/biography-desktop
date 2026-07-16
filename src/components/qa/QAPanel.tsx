@@ -14,6 +14,7 @@ interface QAPanelProps {
  */
 export default function QAPanel({ session, onAsk }: QAPanelProps) {
   const streamedText = useGameStore((s) => s.streamedText);
+  const isQaStreaming = useGameStore((s) => s.isQaStreaming);
   const settings = useGameStore((s) => s.settings);
 
   const [expanded, setExpanded] = useState(true);
@@ -27,12 +28,6 @@ export default function QAPanel({ session, onAsk }: QAPanelProps) {
   const qaHistory: QAMessage[] = session.player.qaHistory ?? [];
   const maxEntries = Math.min(settings?.maxQaHistory ?? 20, 20);
   const visibleMessages = qaHistory.slice(-maxEntries);
-
-  // QA streaming: show streamed text when there's content and we're waiting for an answer
-  const isQaStreaming =
-    qaHistory.length > 0 &&
-    qaHistory[qaHistory.length - 1].role === 'user' &&
-    streamedText.length > 0;
 
   // Auto-scroll
   useEffect(() => {

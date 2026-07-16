@@ -5,6 +5,7 @@ import {
   PRESET_PROVIDERS,
   providerRequiresCloudConsent,
 } from '@/services/config';
+import { validateLlmBaseUrl } from '@/services/llm';
 import type { AppSettings } from '@/types/settings';
 import type { ModelInfo, DownloadedModel, ServerStatus } from '@/types/models';
 import { isTauriRuntime } from '@/services/runtime';
@@ -67,6 +68,11 @@ export default function SettingsScreen() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [dbInfo, setDbInfo] = useState<{ path: string; size: number; sessionCount: number; activeCount: number } | null>(null);
   const [backups, setBackups] = useState<BackupInfo[]>([]);
+  const baseUrlValidation = validateLlmBaseUrl(
+    draft.baseUrl,
+    draft.llmProvider
+  );
+  const baseUrlError = baseUrlValidation.valid ? null : baseUrlValidation.error;
 
   // Refs for paste
   const apiKeyRef = useRef<HTMLInputElement>(null);
@@ -144,6 +150,10 @@ export default function SettingsScreen() {
 
   // ── Connection test ────────────────────────────────
   const handleTestConnection = useCallback(async () => {
+    if (baseUrlError) {
+      setTestResult('failure');
+      return;
+    }
     setTestResult('testing');
     try {
       const ok = await testLlmConnection(draft);
@@ -151,12 +161,12 @@ export default function SettingsScreen() {
     } catch {
       setTestResult('failure');
     }
-  }, [draft, testLlmConnection]);
+  }, [baseUrlError, draft, testLlmConnection]);
 
   // ── Save ──────────────────────────────────────────
   const handleSave = useCallback(async () => {
-    if (providerRequiresCloudConsent(draft.llmProvider)
-      && !draft.cloudPrivacyAcknowledged) return;
+    if ((providerRequiresCloudConsent(draft.llmProvider)
+      && !draft.cloudPrivacyAcknowledged) || baseUrlError) return;
     setIsSaving(true);
     setSaveError(null);
     try {
@@ -167,7 +177,7 @@ export default function SettingsScreen() {
     } finally {
       setIsSaving(false);
     }
-  }, [draft, updateSettings, setShowSettings]);
+  }, [baseUrlError, draft, updateSettings, setShowSettings]);
 
   // ── Paste API key from clipboard ──────────────────
   const handlePasteApiKey = useCallback(async () => {
@@ -251,6 +261,7 @@ export default function SettingsScreen() {
           {activeTab === 'llm' && (
             <LlmTabContent
               draft={draft}
+              baseUrlError={baseUrlError}
               showApiKey={showApiKey}
               testResult={testResult}
               apiKeyRef={apiKeyRef}
@@ -323,8 +334,8 @@ export default function SettingsScreen() {
           <button
             type="button"
             onClick={handleSave}
-            disabled={isSaving || providerRequiresCloudConsent(draft.llmProvider)
-              && !draft.cloudPrivacyAcknowledged}
+            disabled={isSaving || (providerRequiresCloudConsent(draft.llmProvider)
+              && !draft.cloudPrivacyAcknowledged) || !!baseUrlError}
             className="btn-primary text-sm disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isSaving ? '保存中...' : '保存设置'}
@@ -342,6 +353,7 @@ export default function SettingsScreen() {
 
 function LlmTabContent({
   draft,
+  baseUrlError,
   showApiKey,
   testResult,
   apiKeyRef,
@@ -354,6 +366,7 @@ function LlmTabContent({
   onPrivacyChange,
 }: {
   draft: AppSettings;
+  baseUrlError: string | null;
   showApiKey: boolean;
   testResult: 'idle' | 'testing' | 'success' | 'failure';
   apiKeyRef: { current: HTMLInputElement | null };
@@ -380,6 +393,18 @@ function LlmTabContent({
       : testResult === 'failure'
         ? 'border-red-500/40 text-red-400'
         : '';
+  const selectedPreset = PRESET_PROVIDERS.find(
+    (provider) => provider.id === draft.llmProvider
+  );
+  const isStableCloudProvider =
+    draft.llmProvider === 'deepseek' || draft.llmProvider === 'openai';
+  const normalizedDraftBaseUrl = draft.baseUrl.trim().replace(/\/+$/, '').toLowerCase();
+  const normalizedOfficialBaseUrl = selectedPreset?.baseUrl
+    .replace(/\/+$/, '')
+    .toLowerCase();
+  const usesCustomBaseUrl = isStableCloudProvider
+    && normalizedDraftBaseUrl !== ''
+    && normalizedDraftBaseUrl !== normalizedOfficialBaseUrl;
 
   return (
     <div className="space-y-5">
@@ -494,10 +519,21 @@ function LlmTabContent({
           type="text"
           value={draft.baseUrl}
           onChange={(e) => onUpdate('baseUrl', e.target.value)}
-          disabled={!EXPERIMENTAL_PROVIDERS_ENABLED || draft.llmProvider !== 'custom'}
-          placeholder="https://api.deepseek.com"
-          className="input-base disabled:cursor-not-allowed disabled:opacity-60"
+          placeholder={selectedPreset?.baseUrl ?? 'https://example.com'}
+          className="input-base"
         />
+        {isStableCloudProvider && (
+          <p className={`mt-1.5 text-xs ${usesCustomBaseUrl ? 'text-amber-300' : 'text-gray-500'}`}>
+            {usesCustomBaseUrl
+              ? '当前请求、API Key 与生成上下文将发送到此自定义地址，请确认端点可信。'
+              : `留空时自动使用 ${selectedPreset?.baseUrl}。`}
+          </p>
+        )}
+        {baseUrlError && (
+          <p role="alert" className="mt-1.5 text-xs text-red-400">
+            {baseUrlError}
+          </p>
+        )}
       </div>
 
       {/* Model */}
@@ -556,7 +592,7 @@ function LlmTabContent({
         <button
           type="button"
           onClick={onTestConnection}
-          disabled={testResult === 'testing'}
+          disabled={testResult === 'testing' || !!baseUrlError}
           className={`btn-secondary text-sm ${testBtnColor}`}
         >
           {testBtnLabel}

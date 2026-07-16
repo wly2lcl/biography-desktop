@@ -88,4 +88,91 @@ describe('SettingsScreen data operation state', () => {
     }
     expect(container.textContent).toContain('正在生成内容、保存会话或执行其他数据操作');
   });
+
+  it('allows editing or clearing the stable provider Base URL', async () => {
+    await act(async () => root.render(<SettingsScreen />));
+    const input = container.querySelector<HTMLInputElement>('#settings-base-url');
+    expect(input).not.toBeNull();
+    expect(input?.disabled).toBe(false);
+
+    await act(async () => {
+      if (!input) return;
+      input.value = '';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    expect(input?.value).toBe('');
+    expect(container.textContent).toContain('留空时自动使用 https://api.deepseek.com');
+  });
+
+  it('blocks saving and connection tests for a remote HTTP Base URL', async () => {
+    useGameStore.setState({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        cloudPrivacyAcknowledged: true,
+        baseUrl: 'http://gateway.example.com/v1',
+      },
+    });
+    await act(async () => root.render(<SettingsScreen />));
+
+    const input = container.querySelector<HTMLInputElement>('#settings-base-url');
+    const testButton = [...container.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === '测试连接');
+    const saveButton = [...container.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === '保存设置');
+
+    expect(input?.value).toBe('http://gateway.example.com/v1');
+    expect(container.textContent).toContain(
+      '远程 Base URL 必须使用 HTTPS；HTTP 仅允许本机回环地址'
+    );
+    expect(testButton?.disabled).toBe(true);
+    expect(saveButton?.disabled).toBe(true);
+  });
+
+  it.each([
+    'http://localhost:8080',
+    'http://127.0.0.1:8080/v1',
+    'http://[::1]:8080',
+  ])('allows a loopback HTTP Base URL: %s', async (baseUrl) => {
+    useGameStore.setState({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        cloudPrivacyAcknowledged: true,
+        baseUrl,
+      },
+    });
+    await act(async () => root.render(<SettingsScreen />));
+
+    const testButton = [...container.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === '测试连接');
+    const saveButton = [...container.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === '保存设置');
+
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(testButton?.disabled).toBe(false);
+    expect(saveButton?.disabled).toBe(false);
+  });
+
+  it('blocks an unstarted built-in local model with an empty Base URL', async () => {
+    useGameStore.setState({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        llmProvider: 'llamacpp_local',
+        apiKey: '',
+        baseUrl: '',
+        model: '',
+        cloudPrivacyAcknowledged: false,
+      },
+    });
+    await act(async () => root.render(<SettingsScreen />));
+
+    const testButton = [...container.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === '测试连接');
+    const saveButton = [...container.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === '保存设置');
+
+    expect(container.textContent).toContain('应用内置本地模型尚未启动，请先启动本地服务');
+    expect(testButton?.disabled).toBe(true);
+    expect(saveButton?.disabled).toBe(true);
+  });
 });

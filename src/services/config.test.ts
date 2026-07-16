@@ -48,16 +48,42 @@ describe('settings persistence boundaries', () => {
     });
   });
 
-  it('resets a custom endpoint disguised as a stable provider', async () => {
+  it('preserves a custom endpoint for a stable provider', async () => {
     const settings = await loadSettings(async () => JSON.stringify({
       llmProvider: 'openai',
-      baseUrl: 'http://localhost:11434/v1',
-      model: 'local-model',
+      baseUrl: ' https://gateway.example.com/v1/ ',
+      model: 'gateway-model',
     }));
     expect(settings).toMatchObject({
       llmProvider: 'openai',
-      baseUrl: 'https://api.openai.com/v1',
+      baseUrl: 'https://gateway.example.com/v1/',
+      model: 'gateway-model',
+    });
+  });
+
+  it('preserves an empty Base URL so requests can use the provider default', async () => {
+    const settings = await loadSettings(async () => JSON.stringify({
+      llmProvider: 'openai',
+      baseUrl: '   ',
       model: 'gpt-4o-mini',
+    }));
+    expect(settings).toMatchObject({
+      llmProvider: 'openai',
+      baseUrl: '',
+      model: 'gpt-4o-mini',
+    });
+  });
+
+  it('keeps a legacy remote HTTP Base URL visible so the user can correct it', async () => {
+    const settings = await loadSettings(async () => JSON.stringify({
+      llmProvider: 'deepseek',
+      baseUrl: 'http://legacy-gateway.example.com/v1',
+      model: 'legacy-model',
+    }));
+    expect(settings).toMatchObject({
+      llmProvider: 'deepseek',
+      baseUrl: 'http://legacy-gateway.example.com/v1',
+      model: 'legacy-model',
     });
   });
 

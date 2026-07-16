@@ -1,8 +1,12 @@
 // src/services/config.ts - Configuration management
 
 import type { AppSettings } from '../types/settings';
+import type { LlmProvider } from '../types/settings';
 import { DEFAULT_SETTINGS } from '../types/settings';
-import { streamChatText } from './llm';
+import {
+  OFFICIAL_PROVIDER_BASE_URLS,
+  streamChatText,
+} from './llm';
 import { isTauriRuntime } from './runtime';
 
 export const EXPERIMENTAL_PROVIDERS_ENABLED =
@@ -12,14 +16,14 @@ const STABLE_PROVIDERS = [
   {
     id: 'deepseek',
     name: 'DeepSeek（推荐）',
-    baseUrl: 'https://api.deepseek.com',
+    baseUrl: OFFICIAL_PROVIDER_BASE_URLS.deepseek,
     model: 'deepseek-chat',
     description: '云端服务，费用与额度以服务商当前规则为准',
   },
   {
     id: 'openai',
     name: 'OpenAI',
-    baseUrl: 'https://api.openai.com/v1',
+    baseUrl: OFFICIAL_PROVIDER_BASE_URLS.openai,
     model: 'gpt-4o-mini',
     description: '付费，稳定可靠',
   },
@@ -71,10 +75,6 @@ export const PRESET_PROVIDERS = EXPERIMENTAL_PROVIDERS_ENABLED
   ? [...STABLE_PROVIDERS, ...EXPERIMENTAL_PROVIDERS]
   : [...STABLE_PROVIDERS];
 
-function normalizeUrl(value: string): string {
-  return value.replace(/\/+$/, '').toLowerCase();
-}
-
 /** Enforce the provider boundary even for imported or legacy settings. */
 export function normalizeSettingsForBuild(settings: AppSettings): AppSettings {
   const finiteNumber = (value: unknown, fallback: number, minimum: number): number =>
@@ -95,7 +95,9 @@ export function normalizeSettingsForBuild(settings: AppSettings): AppSettings {
     ...settings,
     llmProvider: provider,
     apiKey: typeof settings.apiKey === 'string' ? settings.apiKey : '',
-    baseUrl: typeof settings.baseUrl === 'string' ? settings.baseUrl : DEFAULT_SETTINGS.baseUrl,
+    baseUrl: typeof settings.baseUrl === 'string'
+      ? settings.baseUrl.trim()
+      : DEFAULT_SETTINGS.baseUrl,
     model: typeof settings.model === 'string' ? settings.model.trim() : DEFAULT_SETTINGS.model,
     temperature: Math.min(2, finiteNumber(
       settings.temperature, DEFAULT_SETTINGS.temperature, 0
@@ -124,19 +126,17 @@ export function normalizeSettingsForBuild(settings: AppSettings): AppSettings {
 
   if (EXPERIMENTAL_PROVIDERS_ENABLED) return sanitized;
 
-  const preset = STABLE_PROVIDERS.find((candidate) => candidate.id === sanitized.llmProvider)
-    ?? STABLE_PROVIDERS[0];
-  const savedBaseUrl = sanitized.baseUrl;
-  const savedModel = sanitized.model;
-  const usesOfficialEndpoint = sanitized.llmProvider === preset.id
-    && normalizeUrl(savedBaseUrl) === normalizeUrl(preset.baseUrl);
+  const selectedPreset = STABLE_PROVIDERS.find(
+    (candidate) => candidate.id === sanitized.llmProvider
+  );
+  const preset = selectedPreset ?? STABLE_PROVIDERS[0];
 
   return {
     ...sanitized,
     llmProvider: preset.id,
-    baseUrl: preset.baseUrl,
-    model: usesOfficialEndpoint && savedModel ? savedModel : preset.model,
-    apiKey: sanitized.llmProvider === preset.id ? sanitized.apiKey : '',
+    baseUrl: selectedPreset ? sanitized.baseUrl : preset.baseUrl,
+    model: selectedPreset && sanitized.model ? sanitized.model : preset.model,
+    apiKey: selectedPreset ? sanitized.apiKey : '',
   };
 }
 
@@ -220,12 +220,13 @@ export async function saveApiKey(apiKey: string): Promise<void> {
 export async function testConnection(
   baseUrl: string,
   apiKey: string,
-  model: string
+  model: string,
+  provider?: LlmProvider
 ): Promise<boolean> {
   try {
     await streamChatText(
       [{ role: 'user', content: '仅回复 OK' }],
-      { apiKey, baseUrl, model, temperature: 0, maxTokens: 8, timeout: 15000 }
+      { provider, apiKey, baseUrl, model, temperature: 0, maxTokens: 8, timeout: 15000 }
     );
     return true;
   } catch {

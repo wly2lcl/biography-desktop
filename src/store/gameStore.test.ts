@@ -40,6 +40,7 @@ describe('game store request isolation', () => {
       },
       settings: { ...DEFAULT_SETTINGS, cloudPrivacyAcknowledged: true },
       isStreaming: false,
+      isQaStreaming: false,
       streamedText: '',
       activeRequestId: null,
       activeRequestController: null,
@@ -290,6 +291,31 @@ describe('game store request isolation', () => {
       'app_settings',
       expect.stringContaining('"llmProvider":"openai"')
     );
+  });
+
+  it('migrates a custom Base URL when the legacy config has an explicit stable provider', async () => {
+    const storage = useGameStore.getState().storage;
+    vi.spyOn(storage, 'getConfig').mockImplementation(async (key) => key === 'app_config'
+      ? JSON.stringify({
+        provider: 'openai',
+        baseUrl: 'https://gateway.example.com/v1',
+        model: 'gateway-model',
+      })
+      : null);
+    vi.spyOn(storage, 'setConfig').mockResolvedValue(undefined);
+
+    await useGameStore.getState().loadConfig();
+
+    expect(useGameStore.getState().config).toMatchObject({
+      provider: 'openai',
+      baseUrl: 'https://gateway.example.com/v1',
+      model: 'gateway-model',
+    });
+    expect(useGameStore.getState().settings).toMatchObject({
+      llmProvider: 'openai',
+      baseUrl: 'https://gateway.example.com/v1',
+      model: 'gateway-model',
+    });
   });
 
   it('keeps Store and API key unchanged when settings persistence fails', async () => {

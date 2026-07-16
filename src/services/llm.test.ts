@@ -52,6 +52,72 @@ describe('llm.ts', () => {
     });
   });
 
+  describe('Base URL transport security', () => {
+    it.each([
+      'https://gateway.example.com',
+      'https://gateway.example.com/custom/v1',
+      'http://localhost:8080',
+      'http://127.0.0.1:11434/v1',
+      'http://[::1]:8080',
+      '',
+    ])('accepts %s', async (baseUrl) => {
+      const { validateLlmBaseUrl } = await import('./llm');
+      expect(validateLlmBaseUrl(baseUrl, 'deepseek')).toMatchObject({ valid: true });
+    });
+
+    it.each([
+      'http://gateway.example.com',
+      'http://localhost.evil.example.com',
+      'ftp://localhost/model',
+      'not-a-url',
+      'https://user:password@gateway.example.com',
+      'https://gateway.example.com/v1?tenant=demo',
+      'https://gateway.example.com/v1#fragment',
+    ])('rejects unsafe or invalid URL %s before fetch', async (baseUrl) => {
+      globalThis.fetch = vi.fn();
+      const { streamChatText } = await import('./llm');
+
+      await expect(streamChatText(
+        [{ role: 'user', content: 'Hi' }],
+        {
+          provider: 'deepseek',
+          apiKey: 'secret',
+          baseUrl,
+          model: 'model',
+          temperature: 0,
+          maxTokens: 10,
+          timeout: 5000,
+        }
+      )).rejects.toMatchObject({ code: 'invalid_config' });
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['http://localhost:8080', 'http://localhost:8080/v1/chat/completions'],
+      ['http://127.0.0.1:11434/v1', 'http://127.0.0.1:11434/v1/chat/completions'],
+      ['http://[::1]:8080', 'http://[::1]:8080/v1/chat/completions'],
+    ])('allows loopback HTTP endpoint %s', async (baseUrl, expectedUrl) => {
+      globalThis.fetch = vi.fn().mockResolvedValue(
+        mockStreamResponse(['{"choices":[{"delta":{"content":"OK"}}]}'])
+      );
+      const { streamChatText } = await import('./llm');
+
+      await expect(streamChatText(
+        [{ role: 'user', content: 'Hi' }],
+        {
+          provider: 'deepseek',
+          apiKey: 'secret',
+          baseUrl,
+          model: 'model',
+          temperature: 0,
+          maxTokens: 10,
+          timeout: 5000,
+        }
+      )).resolves.toBe('OK');
+      expect(globalThis.fetch).toHaveBeenCalledWith(expectedUrl, expect.any(Object));
+    });
+  });
+
   describe('streamChat - Authorization header behavior', () => {
     it('includes Authorization header when apiKey is provided', async () => {
       globalThis.fetch = vi.fn().mockResolvedValue(
@@ -109,6 +175,119 @@ describe('llm.ts', () => {
       expect(headers['Authorization']).toBeUndefined();
       expect(headers['Content-Type']).toBe('application/json');
     });
+
+    it.each([
+      ['deepseek', 'https://api.deepseek.com/v1/chat/completions'],
+      ['openai', 'https://api.openai.com/v1/chat/completions'],
+    ] as const)('uses the %s official endpoint when Base URL is empty', async (
+      provider,
+      expectedUrl
+    ) => {
+      globalThis.fetch = vi.fn().mockResolvedValue(
+        mockStreamResponse(['{"choices":[{"delta":{"content":"OK"}}]}'])
+      );
+
+      const { streamChatText } = await import('./llm');
+      await streamChatText(
+        [{ role: 'user', content: 'Hi' }],
+        {
+          provider,
+          apiKey: 'key',
+          baseUrl: '   ',
+          model: 'model',
+          temperature: 0,
+          maxTokens: 10,
+          timeout: 5000,
+        }
+      );
+
+      expect(globalThis.fetch).toHaveBeenCalledWith(expectedUrl, expect.any(Object));
+    });
+
+    it.each([
+      'ollama',
+      'llamacpp',
+      'llamacpp_local',
+      'custom',
+    ] as const)('rejects an empty Base URL for %s before fetch', async (provider) => {
+      globalThis.fetch = vi.fn();
+      const { streamChatText } = await import('./llm');
+
+      await expect(streamChatText(
+        [{ role: 'user', content: 'Hi' }],
+        {
+          provider,
+          apiKey: 'secret',
+          baseUrl: '   ',
+          model: 'model',
+          temperature: 0,
+          maxTokens: 10,
+          timeout: 5000,
+        }
+      )).rejects.toMatchObject({ code: 'invalid_config' });
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it('rejects an empty Base URL when the provider is omitted', async () => {
+      globalThis.fetch = vi.fn();
+      const { streamChatText } = await import('./llm');
+
+      await expect(streamChatText(
+        [{ role: 'user', content: 'Hi' }],
+        {
+          apiKey: 'secret',
+          baseUrl: '',
+          model: 'model',
+          temperature: 0,
+          maxTokens: 10,
+          timeout: 5000,
+        }
+      )).rejects.toMatchObject({ code: 'invalid_config' });
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it('rejects an unknown provider from corrupted persisted configuration', async () => {
+      globalThis.fetch = vi.fn();
+      const { streamChatText } = await import('./llm');
+
+      await expect(streamChatText(
+        [{ role: 'user', content: 'Hi' }],
+        {
+          provider: 'unknown-provider' as never,
+          apiKey: 'secret',
+          baseUrl: 'https://gateway.example.com',
+          model: 'model',
+          temperature: 0,
+          maxTokens: 10,
+          timeout: 5000,
+        }
+      )).rejects.toMatchObject({ code: 'invalid_config' });
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it('keeps the local provider identity when using a loopback endpoint', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(
+        mockStreamResponse(['{"choices":[{"delta":{"content":"OK"}}]}'])
+      );
+      const { streamChatText } = await import('./llm');
+
+      await expect(streamChatText(
+        [{ role: 'user', content: 'Hi' }],
+        {
+          provider: 'llamacpp_local',
+          apiKey: '',
+          baseUrl: 'http://127.0.0.1:8080',
+          model: 'local-model',
+          temperature: 0,
+          maxTokens: 10,
+          timeout: 5000,
+        }
+      )).resolves.toBe('OK');
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        'http://127.0.0.1:8080/v1/chat/completions',
+        expect.any(Object)
+      );
+    });
   });
 
   describe('streamChat - streaming behavior', () => {
@@ -126,7 +305,7 @@ describe('llm.ts', () => {
         [{ role: 'user', content: 'Hi' }],
         {
           apiKey: 'k',
-          baseUrl: 'http://x',
+          baseUrl: 'https://x',
           model: 'm',
           temperature: 0,
           maxTokens: 10,
@@ -154,7 +333,7 @@ describe('llm.ts', () => {
         [{ role: 'user', content: 'Hi' }],
         {
           apiKey: 'k',
-          baseUrl: 'http://x',
+          baseUrl: 'https://x',
           model: 'm',
           temperature: 0,
           maxTokens: 10,
@@ -181,7 +360,7 @@ describe('llm.ts', () => {
       const { streamChatText } = await import('./llm');
       await expect(streamChatText(
         [{ role: 'user', content: 'Hi' }],
-        { apiKey: 'k', baseUrl: 'http://x', model: 'm', temperature: 0, maxTokens: 10, timeout: 5000 }
+        { apiKey: 'k', baseUrl: 'https://x', model: 'm', temperature: 0, maxTokens: 10, timeout: 5000 }
       )).resolves.toBe('AB');
     });
 
@@ -201,7 +380,7 @@ describe('llm.ts', () => {
 
       await expect(streamChatText(
         [{ role: 'user', content: 'Hi' }],
-        { apiKey: 'k', baseUrl: 'http://x', model: 'm', temperature: 0, maxTokens: 10, timeout: 50 }
+        { apiKey: 'k', baseUrl: 'https://x', model: 'm', temperature: 0, maxTokens: 10, timeout: 50 }
       )).resolves.toBe('complete!');
       expect(cancel).toHaveBeenCalledOnce();
     });
@@ -222,7 +401,7 @@ describe('llm.ts', () => {
 
       await expect(streamChatText(
         [{ role: 'user', content: 'Hi' }],
-        { apiKey: 'k', baseUrl: 'http://x', model: 'm', temperature: 0, maxTokens: 10, timeout: 50 }
+        { apiKey: 'k', baseUrl: 'https://x', model: 'm', temperature: 0, maxTokens: 10, timeout: 50 }
       )).resolves.toBe('complete');
     });
 
@@ -235,7 +414,7 @@ describe('llm.ts', () => {
       const { streamChatText } = await import('./llm');
       await expect(streamChatText(
         [{ role: 'user', content: 'Hi' }],
-        { apiKey: 'k', baseUrl: 'http://x', model: 'm', temperature: 0, maxTokens: 10, timeout: 5000 }
+        { apiKey: 'k', baseUrl: 'https://x', model: 'm', temperature: 0, maxTokens: 10, timeout: 5000 }
       )).rejects.toMatchObject({ code: 'invalid_response' });
     });
 
@@ -261,7 +440,7 @@ describe('llm.ts', () => {
 
       await expect(withRetry(() => streamChatText(
         [{ role: 'user', content: 'Hi' }],
-        { apiKey: 'k', baseUrl: 'http://x', model: 'm', temperature: 0, maxTokens: 10, timeout: 5000 }
+        { apiKey: 'k', baseUrl: 'https://x', model: 'm', temperature: 0, maxTokens: 10, timeout: 5000 }
       ), { maxAttempts: 3 })).rejects.toMatchObject({ code: 'invalid_response' });
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
@@ -271,7 +450,7 @@ describe('llm.ts', () => {
       const { streamChatText } = await import('./llm');
       await expect(streamChatText(
         [{ role: 'user', content: 'Hi' }],
-        { apiKey: 'k', baseUrl: 'http://x', model: 'm', temperature: 0, maxTokens: 10, timeout: 5000 }
+        { apiKey: 'k', baseUrl: 'https://x', model: 'm', temperature: 0, maxTokens: 10, timeout: 5000 }
       )).rejects.toMatchObject({ code: 'invalid_response' });
     });
 
@@ -280,7 +459,7 @@ describe('llm.ts', () => {
       const { streamChatText } = await import('./llm');
       await expect(streamChatText(
         [{ role: 'user', content: 'Hi' }],
-        { apiKey: 'k', baseUrl: 'http://x', model: 'm', temperature: 0, maxTokens: 10, timeout: 5000 }
+        { apiKey: 'k', baseUrl: 'https://x', model: 'm', temperature: 0, maxTokens: 10, timeout: 5000 }
       )).rejects.toMatchObject({ code: 'invalid_response' });
     });
   });
@@ -346,7 +525,7 @@ describe('llm.ts', () => {
       const { streamChatText } = await import('./llm');
       await expect(streamChatText(
         [{ role: 'user', content: 'Hi' }],
-        { apiKey: 'k', baseUrl: 'http://x', model: 'm', temperature: 0, maxTokens: 10, timeout: 5000 }
+        { apiKey: 'k', baseUrl: 'https://x', model: 'm', temperature: 0, maxTokens: 10, timeout: 5000 }
       )).rejects.toMatchObject({ code: 'rate_limit', status: 429, retryAfterMs: 2000 });
     });
 
@@ -391,7 +570,7 @@ describe('llm.ts', () => {
         [{ role: 'user', content: 'Hi' }],
         {
           apiKey: 'k',
-          baseUrl: 'http://x',
+          baseUrl: 'https://x',
           model: 'm',
           temperature: 0,
           maxTokens: 10,
@@ -417,7 +596,7 @@ describe('llm.ts', () => {
         [{ role: 'user', content: 'Hi' }],
         {
           apiKey: 'k',
-          baseUrl: 'http://x',
+          baseUrl: 'https://x',
           model: 'm',
           temperature: 0,
           maxTokens: 10,
@@ -498,6 +677,33 @@ describe('config.ts', () => {
           },
         })
       );
+    });
+
+    it('uses the selected provider official endpoint when testing an empty Base URL', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(
+        mockStreamResponse(['{"choices":[{"delta":{"content":"OK"}}]}'])
+      );
+
+      const { testConnection } = await import('./config');
+      await expect(testConnection('', 'sk-123', 'gpt-4o-mini', 'openai')).resolves.toBe(true);
+
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        'https://api.openai.com/v1/chat/completions',
+        expect.any(Object)
+      );
+    });
+
+    it('rejects a remote HTTP Base URL without issuing a request', async () => {
+      globalThis.fetch = vi.fn();
+      const { testConnection } = await import('./config');
+
+      await expect(testConnection(
+        'http://gateway.example.com',
+        'sk-123',
+        'model',
+        'deepseek'
+      )).resolves.toBe(false);
+      expect(globalThis.fetch).not.toHaveBeenCalled();
     });
 
     it('omits Authorization header when apiKey is empty', async () => {

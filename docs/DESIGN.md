@@ -271,11 +271,13 @@ export interface AppConfig {
 
 - 正式构建仅注册 DeepSeek 与 OpenAI 两个 Chat Completions 适配器。
 - Ollama、llama.cpp 与自定义兼容接口由 `VITE_ENABLE_EXPERIMENTAL_PROVIDERS` 控制；Rust 本地模型命令由默认关闭的 `local-model` feature 控制。
-- 实验构建必须通过 `npm run tauri:build:experimental` 同时启用 Vite experimental mode、独立 Tauri CSP（放行 `localhost` 与 `127.0.0.1`）和 Cargo `local-model` feature；本地提供商不得强制要求 API Key。正式配置继续只允许 DeepSeek/OpenAI 域名。
+- 实验构建必须通过 `npm run tauri:build:experimental` 同时启用 Vite experimental mode、独立 Tauri CSP（放行 `localhost` 与 `127.0.0.1`）和 Cargo `local-model` feature；本地提供商不得强制要求 API Key。
+- 稳定版仍只注册 DeepSeek/OpenAI 两个提供商，但二者的 Base URL 均可编辑，以支持用户自有代理或 OpenAI-compatible 网关。Base URL 留空时必须按当前提供商回退到官方地址；自定义地址会接收 API Key 与生成上下文，设置页必须明确提示这一边界。
+- 自定义远程 Base URL 必须使用 HTTPS。HTTP 仅允许精确的 `localhost`、`127.0.0.1` 与 `::1` 回环主机（可带端口），用于本地代理和实验模型；请求层与设置页复用同一校验，并拒绝伪造 localhost、非 HTTP(S) 协议、URL 凭据、query 和 fragment。旧的不安全地址保留显示供用户修正，但不得发出请求。
 - Web 模式仅用于开发调试；桌面版 API Key 存放在系统 keyring。云端模式会向所选提供商发送生成所需的世界观、角色和剧情文本。
 - Tauri 运行时必须通过 Tauri 2 默认注入的 `window.__TAURI_INTERNALS__`（兼容显式启用的 `window.__TAURI__`）识别，并由存储、世界观与 API Key 服务共享同一个判断；不得因 `withGlobalTauri=false` 将正式包误判为 Web 模式。
 - `app_settings` 与 SQLite `config` 表不得包含 API Key；读取旧版明文设置时必须忽略该字段，启动后仅将 keyring（Web 调试模式为专用 localStorage key）中的值注入内存 `settings/config`。
-- 稳定构建读取旧 `app_config` 时，提供商、Base URL 与模型必须经过 DeepSeek/OpenAI 白名单归一化；旧实验/自定义地址不得覆盖当前稳定设置。仅存在旧 `app_config` 时可迁移受支持的云端提供商和通用数值参数。
+- 稳定构建读取旧 `app_config` 时，提供商必须经过 DeepSeek/OpenAI 白名单归一化；受支持提供商显式保存的 Base URL（包括空值）与模型应予保留。旧实验提供商不得覆盖当前稳定设置。仅存在旧 `app_config` 时可迁移带有明确 DeepSeek/OpenAI provider 的自定义端点和通用数值参数。
 - 仅存在旧 `app_config` 时，迁移结果必须同时更新内存中的 `settings` 与 `config`，并写回 `app_settings`；界面展示、连接测试与游戏请求不得指向不同提供商。
 - 设置保存按“安全存储 API Key → 持久化非敏感设置 → 发布 Store 状态”提交。任一步失败时不得留下已生效但未持久化的 Store 状态，并必须向用户显示可理解的错误。
 - Tauri IPC 拒绝既可能是 `Error` 也可能是非空字符串；界面必须保留字符串诊断信息，不得统一降级为“未知错误”。
@@ -321,6 +323,7 @@ interface WorldRef {
 - 传记 Prompt、完整/未完待续语义和世界观加载统一由 `GameEngine.generateBiography()` 负责；Store 只承担请求隔离、流式展示和成功后的持久化，不得保留第二套生成逻辑。
 - 玩家主动结束可以先在内存中显示结束状态，但只有持久化成功后才能进入传记确认；保存失败且用户未离开该会话时必须回滚为可继续状态，允许重试。
 - 问答请求的历史上下文只包含提交前的既有消息，当前问题仅通过独立问题字段发送一次；成功后按 `maxQaHistory` 裁剪持久化消息条目。
+- 问答流与剧情正文流必须在 UI 状态中明确区分。问答生成期间正文继续显示当前场景，流式回答只出现在问答面板；不得因复用全局 `streamedText` 临时把正文替换成问答内容。全局请求互斥仍保持不变，问答期间选择按钮可以继续禁用。
 - 摘要属于选择处理事务的一部分：必须等待完成或确定性降级后再保存会话。
 - 场景返回空 `choices` 且 `auto_continue=true` 时，引擎必须在同一次选择事务内继续生成，直至出现选择、自然结束或达到 `maxAutoContinue` 后注入安全选项；不得保存一个仍活跃但无法操作的空选项场景。自动续接计数只属于当前请求，取消或失败后不得污染下一次请求。
 
@@ -564,11 +567,12 @@ function formatHistory(history: HistoryEntry[], summary?: string): string {
 
 稳定版的 DeepSeek 与 OpenAI 适配器统一使用 **OpenAI Chat Completions API** 协议；Ollama、llama.cpp 和自定义兼容接口只在显式实验构建中注册：
 - 端点: `{baseUrl}/v1/chat/completions`
+- Base URL 为空时：仅明确选择 DeepSeek/OpenAI 的配置分别回退到 `https://api.deepseek.com` 与 `https://api.openai.com/v1`；Ollama、llama.cpp、应用内置 llama.cpp 和自定义提供商必须返回配置错误，不得隐式请求任一云端官方地址
 - 请求体: `{ model, messages, temperature, max_tokens, stream: true }`
 - 响应: SSE 流式格式 `data: {"choices":[{"delta":{"content":"..."}}]}`
 - 终止标记: `data: [DONE]`
 
-协议解析由统一适配边界复用，但稳定构建会强制提供商白名单和官方端点，不能接入任意本地或远程服务。
+协议解析由统一适配边界复用。稳定构建强制提供商类型为 DeepSeek/OpenAI，但允许为这两个适配器配置自有代理或兼容网关；桌面 CSP 允许任意 HTTPS 端点，并仅为 `localhost`、`127.0.0.1` 与 `::1` 放行 HTTP。自定义端点的可信度由用户负责，界面需提醒其会接收密钥与生成上下文。
 
 #### llama.cpp 本地模型支持（Phase 8）
 
