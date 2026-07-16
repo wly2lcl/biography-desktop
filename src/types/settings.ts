@@ -7,6 +7,7 @@ export interface AppSettings {
   temperature: number;
   maxTokens: number;
   timeout: number;
+  cloudPrivacyAcknowledged: boolean;
 
   // Game parameters
   maxChoices: number;
@@ -30,6 +31,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   temperature: 0.8,
   maxTokens: 4096,
   timeout: 120000,
+  cloudPrivacyAcknowledged: false,
   maxChoices: 30,
   maxAutoContinue: 5,
   summaryThreshold: 15,

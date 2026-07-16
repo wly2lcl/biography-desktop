@@ -12,15 +12,24 @@ import type {
   DownloadedModel,
   ServerStatus,
 } from '../types/models';
+import { SESSION_SCHEMA_VERSION } from '../types/models';
 import type { AppSettings } from '../types/settings';
 import { DEFAULT_SETTINGS } from '../types/settings';
 import { GameEngine } from '../game/engine';
 import { createStorage } from '../services/storage';
-import { streamChatText, type LLMConfig } from '../services/llm';
-import { prompts } from '../services/prompts';
-import { listWorlds, loadBuiltInWorld } from '../services/world';
-import { loadSettings, saveSettings, loadApiKey, saveApiKey, testConnection } from '../services/config';
+import { LLMError, type LLMConfig } from '../services/llm';
+import { listWorlds } from '../services/world';
+import {
+  EXPERIMENTAL_PROVIDERS_ENABLED,
+  loadSettings,
+  saveSettings,
+  loadApiKey,
+  normalizeSettingsForBuild,
+  saveApiKey,
+  testConnection,
+} from '../services/config';
 import { generateId, generateQaId } from '../utils/format';
+import { getErrorMessage } from '../utils/errors';
 
 import { errorLogger } from '../services/errorLogger';
 
@@ -42,10 +51,15 @@ interface GameState {
   settings: AppSettings;
   worlds: WorldInfo[];
   resumeSessions: SessionSummary[];
+  resumeWarning: string | null;
 
   // Streaming state
   isStreaming: boolean;
   streamedText: string;
+  activeRequestId: string | null;
+  activeRequestController: AbortController | null;
+  isPersistingSession: boolean;
+  isDataMutationInProgress: boolean;
 
   // UI state
   isLoading: boolean;
@@ -78,7 +92,7 @@ interface GameState {
   // Actions - settings
   loadSettings: () => Promise<void>;
   updateSettings: (updates: Partial<AppSettings>) => Promise<void>;
-  testLlmConnection: () => Promise<boolean>;
+  testLlmConnection: (draft?: AppSettings) => Promise<boolean>;
 
   // Actions - worlds
   loadWorlds: () => Promise<void>;
@@ -101,12 +115,14 @@ interface GameState {
   startSystemGame: () => Promise<void>;
   makeChoice: (choiceId: string) => Promise<void>;
   generateBiography: () => Promise<void>;
-  endGame: (generateBio?: boolean) => void;
+  endGame: (generateBio?: boolean) => Promise<void>;
   skipBiography: () => void;
   newGame: () => void;
-  checkResume: () => Promise<void>;
+  checkResume: (options?: { throwOnError?: boolean }) => Promise<void>;
   deleteSession: (sessionId: string) => Promise<void>;
   resumeGame: (sessionId: string) => Promise<void>;
+  prepareForDataMutation: () => Promise<void>;
+  finishDataMutation: () => void;
 
   // Actions - QA
   askQuestion: (question: string) => Promise<void>;
@@ -120,6 +136,7 @@ interface GameState {
 
 function configToLlm(config: AppConfig): LLMConfig {
   return {
+    provider: config.provider,
     apiKey: config.apiKey,
     baseUrl: config.baseUrl,
     model: config.model,
@@ -132,6 +149,7 @@ function configToLlm(config: AppConfig): LLMConfig {
 /** Derive LLM config from settings */
 function settingsToConfig(s: AppSettings): AppConfig {
   return {
+    provider: s.llmProvider === 'openai' ? 'openai' : 'deepseek',
     apiKey: s.apiKey,
     baseUrl: s.baseUrl,
     model: s.model,
@@ -141,8 +159,107 @@ function settingsToConfig(s: AppSettings): AppConfig {
   };
 }
 
+function settingsFromConfig(
+  current: AppSettings,
+  config: AppConfig,
+  apiKey: string
+): AppSettings {
+  const llmProvider = config.provider === 'openai' ? 'openai'
+    : config.provider === 'deepseek' ? 'deepseek'
+      : current.llmProvider;
+  return normalizeSettingsForBuild({
+    ...current,
+    llmProvider,
+    apiKey,
+    baseUrl: config.baseUrl,
+    model: config.model,
+    temperature: config.temperature,
+    maxTokens: config.maxTokens,
+    timeout: config.timeout,
+  });
+}
+
+function containsSettingsObject(raw: string | null): boolean {
+  if (raw === null) return false;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
+  } catch {
+    return false;
+  }
+}
+
+const STABLE_CONFIG_PRESETS = {
+  deepseek: { baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' },
+  openai: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+} as const;
+
+function normalizeUrl(value: string): string {
+  return value.replace(/\/+$/, '').toLowerCase();
+}
+
+/** Keep legacy app_config useful without letting it revive hidden providers. */
+function mergeLegacyConfig(
+  current: AppConfig,
+  legacy: Partial<AppConfig>,
+  hasCurrentSettings: boolean
+): AppConfig {
+  if (EXPERIMENTAL_PROVIDERS_ENABLED) {
+    return { ...current, ...legacy, apiKey: current.apiKey };
+  }
+
+  // app_settings is the current source of truth and has already been normalized.
+  if (hasCurrentSettings) return current;
+
+  const merged = { ...current };
+  if (typeof legacy.temperature === 'number' && Number.isFinite(legacy.temperature)) {
+    merged.temperature = legacy.temperature;
+  }
+  if (typeof legacy.maxTokens === 'number' && Number.isFinite(legacy.maxTokens)
+    && legacy.maxTokens > 0) {
+    merged.maxTokens = legacy.maxTokens;
+  }
+  if (typeof legacy.timeout === 'number' && Number.isFinite(legacy.timeout)
+    && legacy.timeout > 0) {
+    merged.timeout = legacy.timeout;
+  }
+
+  const legacyUrl = typeof legacy.baseUrl === 'string' ? normalizeUrl(legacy.baseUrl) : '';
+  const provider = legacy.provider === 'deepseek' || legacy.provider === 'openai'
+    ? legacy.provider
+    : legacyUrl === normalizeUrl(STABLE_CONFIG_PRESETS.openai.baseUrl)
+      ? 'openai'
+      : legacyUrl === normalizeUrl(STABLE_CONFIG_PRESETS.deepseek.baseUrl)
+        ? 'deepseek'
+        : null;
+  if (!provider) return merged;
+
+  const preset = STABLE_CONFIG_PRESETS[provider];
+  const usesOfficialEndpoint = legacyUrl === normalizeUrl(preset.baseUrl);
+  return {
+    ...merged,
+    provider,
+    baseUrl: preset.baseUrl,
+    model: usesOfficialEndpoint && typeof legacy.model === 'string' && legacy.model.trim()
+      ? legacy.model.trim()
+      : preset.model,
+  };
+}
+
 /** Categorize errors into user-friendly Chinese messages */
 function formatErrorMessage(err: unknown, defaultMsg: string): string {
+  if (err instanceof LLMError) {
+    const messages: Record<LLMError['code'], string> = {
+      authentication: 'API Key 无效或无权访问所选模型，请检查云端配置',
+      rate_limit: '请求过于频繁或额度不足，请稍后重试',
+      timeout: '请求超时，请检查网络或模型服务状态',
+      network: '网络连接失败，请检查网络设置',
+      server: '模型服务暂时不可用，请稍后重试',
+      invalid_response: '模型返回了无效响应，请重试或更换模型',
+      cancelled: '请求已取消',
+    };
+    return messages[err.code];
+  }
   if (err instanceof Error) {
     const msg = err.message;
     // Network errors
@@ -167,10 +284,43 @@ function formatErrorMessage(err: unknown, defaultMsg: string): string {
     }
     return `操作失败: ${msg}`;
   }
-  return defaultMsg;
+  const message = getErrorMessage(err, '');
+  return message ? `操作失败: ${message}` : defaultMsg;
 }
 
-export const useGameStore = create<GameState>((set, get) => ({
+export const useGameStore = create<GameState>((set, get) => {
+  const pendingSessionWrites = new Set<Promise<void>>();
+
+  const persistSession = async (session: GameSession): Promise<void> => {
+    let write: Promise<void>;
+    try {
+      write = get().storage.saveSession(session);
+    } catch (error) {
+      write = Promise.reject(error);
+    }
+    pendingSessionWrites.add(write);
+    set({ isPersistingSession: true });
+    try {
+      await write;
+    } finally {
+      pendingSessionWrites.delete(write);
+      if (pendingSessionWrites.size === 0) {
+        set({ isPersistingSession: false });
+      }
+    }
+  };
+
+  const invalidateActiveRequest = (): void => {
+    get().activeRequestController?.abort();
+    set({
+      isStreaming: false,
+      streamedText: '',
+      activeRequestId: null,
+      activeRequestController: null,
+    });
+  };
+
+  return ({
   // Initial state
   currentScreen: 'start',
   showSettings: false,
@@ -185,9 +335,14 @@ export const useGameStore = create<GameState>((set, get) => ({
   settings: { ...DEFAULT_SETTINGS },
   worlds: [],
   resumeSessions: [],
+  resumeWarning: null,
 
   isStreaming: false,
   streamedText: '',
+  activeRequestId: null,
+  activeRequestController: null,
+  isPersistingSession: false,
+  isDataMutationInProgress: false,
 
   isLoading: false,
   loadingText: '',
@@ -215,20 +370,64 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   loadConfig: async () => {
     const storage = get().storage;
+    let apiKey = '';
     try {
-      const apiKey = await loadApiKey();
-      const raw = await storage.getConfig('app_config');
+      apiKey = await loadApiKey();
+    } catch (error) {
+      set({ error: formatErrorMessage(error, '无法读取系统钥匙串中的 API Key') });
+    }
+
+    try {
+      const [raw, currentSettingsRaw] = await Promise.all([
+        storage.getConfig('app_config'),
+        storage.getConfig('app_settings'),
+      ]);
       if (raw) {
-        const parsed = JSON.parse(raw) as Partial<AppConfig>;
+        const parsedValue: unknown = JSON.parse(raw);
+        const parsed = parsedValue && typeof parsedValue === 'object' && !Array.isArray(parsedValue)
+          ? { ...parsedValue } as Partial<AppConfig>
+          : {};
+        const hadLegacyApiKey = Object.prototype.hasOwnProperty.call(parsed, 'apiKey');
+        delete parsed.apiKey;
         const settings = get().settings;
-        set({ config: { ...settings, ...parsed, apiKey } as AppConfig });
+        const hasCurrentSettings = containsSettingsObject(currentSettingsRaw);
+        const current = { ...settingsToConfig(settings), apiKey };
+        let config = mergeLegacyConfig(current, parsed, hasCurrentSettings);
+        let synchronizedSettings = { ...settings, apiKey };
+        if (!hasCurrentSettings) {
+          synchronizedSettings = settingsFromConfig(settings, config, apiKey);
+          config = { ...settingsToConfig(synchronizedSettings), apiKey };
+          try {
+            await saveSettings(
+              (key, value) => storage.setConfig(key, value),
+              synchronizedSettings
+            );
+          } catch {
+            // Retry the migration on the next launch; keep both in-memory views consistent now.
+          }
+        }
+        const sanitizedConfig: Partial<AppConfig> = { ...config };
+        delete sanitizedConfig.apiKey;
+        const sanitized = JSON.stringify(sanitizedConfig);
+        if (hadLegacyApiKey || sanitized !== JSON.stringify(parsed)) {
+          try {
+            await storage.setConfig('app_config', sanitized);
+          } catch {
+            // In-memory normalization remains authoritative if cleanup cannot be persisted.
+          }
+        }
+        set({ config, settings: synchronizedSettings });
       } else {
         // No stored config, derive from current settings
-        set({ config: settingsToConfig(get().settings) });
+        const settings = get().settings;
+        const config = { ...settingsToConfig(settings), apiKey };
+        set({ config, settings: { ...settings, apiKey } });
       }
     } catch {
       // Derive from settings as fallback
-      set({ config: settingsToConfig(get().settings) });
+      const settings = get().settings;
+      const config = { ...settingsToConfig(settings), apiKey };
+      set({ config, settings: { ...settings, apiKey } });
     }
   },
 
@@ -247,7 +446,10 @@ export const useGameStore = create<GameState>((set, get) => ({
   // Settings actions
   loadSettings: async () => {
     const storage = get().storage;
-    const settings = await loadSettings((key) => storage.getConfig(key));
+    const settings = await loadSettings(
+      (key) => storage.getConfig(key),
+      (key, value) => storage.setConfig(key, value)
+    );
     set({ settings, config: settingsToConfig(settings) });
 
     // Update engine config
@@ -264,11 +466,44 @@ export const useGameStore = create<GameState>((set, get) => ({
   },
 
   updateSettings: async (updates) => {
-    const newSettings = { ...get().settings, ...updates };
+    const previousSettings = get().settings;
+    const previousConfig = get().config ?? settingsToConfig(previousSettings);
+    const newSettings = normalizeSettingsForBuild({ ...previousSettings, ...updates });
     const newConfig = settingsToConfig(newSettings);
-    set({ settings: newSettings, config: newConfig });
+    const storage = get().storage;
+    let keyWriteCompleted = false;
+    try {
+      await saveApiKey(newConfig.apiKey);
+      keyWriteCompleted = true;
+      await saveSettings((key, value) => storage.setConfig(key, value), newSettings);
+      const { apiKey: _, ...rest } = newConfig;
+      await storage.setConfig('app_config', JSON.stringify(rest));
+    } catch (error) {
+      const rollbackFailures: string[] = [];
+      if (keyWriteCompleted) {
+        try {
+          await saveApiKey(previousSettings.apiKey);
+        } catch (rollbackError) {
+          rollbackFailures.push(rollbackError instanceof Error
+            ? rollbackError.message : String(rollbackError));
+        }
+      }
+      try {
+        await saveSettings((key, value) => storage.setConfig(key, value), previousSettings);
+        const { apiKey: _, ...rest } = previousConfig;
+        await storage.setConfig('app_config', JSON.stringify(rest));
+      } catch (rollbackError) {
+        rollbackFailures.push(rollbackError instanceof Error
+          ? rollbackError.message : String(rollbackError));
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      const rollbackNote = rollbackFailures.length > 0
+        ? `；回滚失败：${rollbackFailures.join('；')}`
+        : '';
+      throw new Error(`保存设置失败：${message}${rollbackNote}`);
+    }
 
-    // Update engine
+    set({ settings: newSettings, config: newConfig });
     get().engine.updateConfig({
       maxChoices: newSettings.maxChoices,
       maxAutoContinue: newSettings.maxAutoContinue,
@@ -279,18 +514,10 @@ export const useGameStore = create<GameState>((set, get) => ({
       maxHistoryHardCap: newSettings.summaryThreshold * 3,
       llmMaxRetries: newSettings.llmMaxRetries,
     });
-
-    // Save
-    const storage = get().storage;
-    await saveSettings((key, value) => storage.setConfig(key, value), newSettings);
-    // Also persist the config for backward compatibility
-    await saveApiKey(newConfig.apiKey);
-    const { apiKey: _, ...rest } = newConfig;
-    await storage.setConfig('app_config', JSON.stringify(rest));
   },
 
-  testLlmConnection: async () => {
-    const { settings } = get();
+  testLlmConnection: async (draft) => {
+    const settings = draft ?? get().settings;
     return testConnection(settings.baseUrl, settings.apiKey, settings.model);
   },
 
@@ -302,6 +529,8 @@ export const useGameStore = create<GameState>((set, get) => ({
         name: m.name,
         filename: m.filename,
         description: m.description,
+        isBuiltIn: m.isBuiltIn,
+        type: m.type,
       }));
       set({ worlds });
     } catch (e) {
@@ -311,11 +540,15 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   // Game actions
   startBasicGame: async (name, world, isBuiltIn, type) => {
-    const { config, engine, storage } = get();
+    const { config, engine, isStreaming, isDataMutationInProgress } = get();
     if (!config) {
       set({ error: '请先配置 LLM' });
       return;
     }
+    if (isStreaming || isDataMutationInProgress) return;
+    get().activeRequestController?.abort();
+    const requestId = generateId();
+    const requestController = new AbortController();
 
     // Create a placeholder scenario so the game screen can render immediately
     const placeholderScenario: Scenario = {
@@ -328,8 +561,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     // Switch to game screen first with streaming state
     set({
       session: {
+        schemaVersion: SESSION_SCHEMA_VERSION,
         sessionId: generateId(),
         world,
+        worldRef: { name: world, source: isBuiltIn ? 'builtin' : 'user', type },
         gameMode: 'basic' as const,
         player: {
           name,
@@ -349,6 +584,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       currentScreen: 'game',
       isStreaming: true,
       streamedText: '',
+      activeRequestId: requestId,
+      activeRequestController: requestController,
     });
 
     try {
@@ -362,35 +599,50 @@ export const useGameStore = create<GameState>((set, get) => ({
         isBuiltIn,
         type,
         (token) => {
-          if (token) set((state) => ({ streamedText: state.streamedText + token }));
-        }
+          if (token && get().activeRequestId === requestId) {
+            set((state) => ({ streamedText: state.streamedText + token }));
+          }
+        },
+        requestController.signal
       );
 
-      await storage.saveSession(session);
+      if (get().activeRequestId !== requestId) return;
+      await persistSession(session);
+      if (get().activeRequestId !== requestId) return;
 
       set({
         session,
         currentScenario: session.scenarios[0],
         isStreaming: false,
         streamedText: '',
+        activeRequestId: null,
+        activeRequestController: null,
       });
     } catch (err) {
       errorLogger.error('startBasicGame failed', { playerName: name, world }, err as Error);
-      set({
-        error: formatErrorMessage(err, '开始游戏失败'),
-        isStreaming: false,
-        streamedText: '',
-        currentScreen: 'start',
-      });
+      if (get().activeRequestId === requestId) {
+        set({
+          error: formatErrorMessage(err, '开始游戏失败'),
+          isStreaming: false,
+          streamedText: '',
+          activeRequestId: null,
+          activeRequestController: null,
+          currentScreen: 'start',
+        });
+      }
     }
   },
 
   generateSystemProposals: async (name, world, isBuiltIn, type) => {
-    const { config, engine } = get();
+    const { config, engine, isStreaming, isDataMutationInProgress } = get();
     if (!config) {
       set({ error: '请先配置 LLM' });
       return;
     }
+    if (isStreaming || isDataMutationInProgress) return;
+    get().activeRequestController?.abort();
+    const requestId = generateId();
+    const requestController = new AbortController();
 
     set({
       currentScreen: 'system',
@@ -399,6 +651,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       systemProposals: [],
       selectedSystem: null,
       pendingStartParams: { name, world, isBuiltIn, type },
+      activeRequestId: requestId,
+      activeRequestController: requestController,
     });
 
     try {
@@ -410,29 +664,50 @@ export const useGameStore = create<GameState>((set, get) => ({
         type,
         llmConfig,
         (token) => {
-          if (token) set((state) => ({ streamedText: state.streamedText + token }));
-        }
+          if (token && get().activeRequestId === requestId) {
+            set((state) => ({ streamedText: state.streamedText + token }));
+          }
+        },
+        requestController.signal
       );
 
+      if (get().activeRequestId !== requestId) return;
       set({
         systemProposals: proposals,
         isStreaming: false,
         streamedText: '',
+        activeRequestId: null,
+        activeRequestController: null,
       });
     } catch (err) {
-      set({
-        error: formatErrorMessage(err, '生成系统方案失败'),
-        isStreaming: false,
-        streamedText: '',
-      });
+      if (get().activeRequestId === requestId) {
+        set({
+          error: formatErrorMessage(err, '生成系统方案失败'),
+          isStreaming: false,
+          streamedText: '',
+          activeRequestId: null,
+          activeRequestController: null,
+        });
+      }
     }
   },
 
   selectSystem: (proposal) => set({ selectedSystem: proposal }),
 
   startSystemGame: async () => {
-    const { config, engine, storage, selectedSystem, pendingStartParams } = get();
+    const {
+      config,
+      engine,
+      selectedSystem,
+      pendingStartParams,
+      isStreaming,
+      isDataMutationInProgress,
+    } = get();
     if (!config || !selectedSystem || !pendingStartParams) return;
+    if (isStreaming || isDataMutationInProgress) return;
+    get().activeRequestController?.abort();
+    const requestId = generateId();
+    const requestController = new AbortController();
 
     // Create placeholder for immediate game screen render
     const placeholderScenario: Scenario = {
@@ -445,8 +720,14 @@ export const useGameStore = create<GameState>((set, get) => ({
     // Switch to game screen immediately with streaming state
     set({
       session: {
+        schemaVersion: SESSION_SCHEMA_VERSION,
         sessionId: generateId(),
         world: pendingStartParams.world,
+        worldRef: {
+          name: pendingStartParams.world,
+          source: pendingStartParams.isBuiltIn ? 'builtin' : 'user',
+          type: pendingStartParams.type,
+        },
         gameMode: 'system' as const,
         system: `${selectedSystem.title}\n\n${selectedSystem.description}\n\n${selectedSystem.abilities}`,
         player: {
@@ -467,6 +748,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       currentScreen: 'game',
       isStreaming: true,
       streamedText: '',
+      activeRequestId: requestId,
+      activeRequestController: requestController,
     });
 
     try {
@@ -480,11 +763,16 @@ export const useGameStore = create<GameState>((set, get) => ({
         pendingStartParams.isBuiltIn,
         pendingStartParams.type,
         (token) => {
-          if (token) set((state) => ({ streamedText: state.streamedText + token }));
-        }
+          if (token && get().activeRequestId === requestId) {
+            set((state) => ({ streamedText: state.streamedText + token }));
+          }
+        },
+        requestController.signal
       );
 
-      await storage.saveSession(newSession);
+      if (get().activeRequestId !== requestId) return;
+      await persistSession(newSession);
+      if (get().activeRequestId !== requestId) return;
 
       set({
         session: newSession,
@@ -493,36 +781,63 @@ export const useGameStore = create<GameState>((set, get) => ({
         streamedText: '',
         selectedSystem: null,
         pendingStartParams: null,
+        activeRequestId: null,
+        activeRequestController: null,
       });
     } catch (err) {
-      set({
-        error: formatErrorMessage(err, '开始游戏失败'),
-        isStreaming: false,
-        streamedText: '',
-        pendingStartParams: null,
-      });
+      if (get().activeRequestId === requestId) {
+        set({
+          error: formatErrorMessage(err, '开始游戏失败'),
+          isStreaming: false,
+          streamedText: '',
+          pendingStartParams: null,
+          activeRequestId: null,
+          activeRequestController: null,
+        });
+      }
     }
   },
 
   makeChoice: async (choiceId) => {
-    const { session, config, engine, storage } = get();
-    if (!session || !config) return;
+    const { session, config, engine, isStreaming, isDataMutationInProgress } = get();
+    if (!session || !config || isStreaming || isDataMutationInProgress) return;
 
-    set({ isStreaming: true, streamedText: '' });
+    get().activeRequestController?.abort();
+    const requestId = generateId();
+    const requestController = new AbortController();
+    const workingSession = JSON.parse(JSON.stringify(session)) as GameSession;
+    set({
+      isStreaming: true,
+      streamedText: '',
+      activeRequestId: requestId,
+      activeRequestController: requestController,
+    });
 
     try {
       const llmConfig = configToLlm(config);
-      const result = await engine.processChoice(session, choiceId, llmConfig, (token) => {
-        set((state) => ({ streamedText: state.streamedText + token }));
-      });
+      const result = await engine.processChoice(
+        workingSession,
+        choiceId,
+        llmConfig,
+        (token) => {
+          if (get().activeRequestId === requestId) {
+            set((state) => ({ streamedText: state.streamedText + token }));
+          }
+        },
+        requestController.signal
+      );
 
-      await storage.saveSession(result.session);
+      if (get().activeRequestId !== requestId) return;
+      await persistSession(result.session);
+      if (get().activeRequestId !== requestId) return;
 
       set({
         session: result.session,
         currentScenario: result.scenario || result.session.scenarios[result.session.scenarios.length - 1],
         isStreaming: false,
         streamedText: '',
+        activeRequestId: null,
+        activeRequestController: null,
       });
 
       // If game ended, go to biography
@@ -531,17 +846,24 @@ export const useGameStore = create<GameState>((set, get) => ({
       }
     } catch (err) {
       errorLogger.error('makeChoice failed', { choiceId }, err as Error);
-      set({
-        error: formatErrorMessage(err, '处理选择失败'),
-        isStreaming: false,
-        streamedText: '',
-      });
+      if (get().activeRequestId === requestId) {
+        set({
+          error: formatErrorMessage(err, '处理选择失败'),
+          isStreaming: false,
+          streamedText: '',
+          activeRequestId: null,
+          activeRequestController: null,
+        });
+      }
     }
   },
 
   generateBiography: async () => {
-    const { session, config, storage } = get();
-    if (!session || !config) return;
+    const { session, config, engine, isStreaming, isDataMutationInProgress } = get();
+    if (!session || !config || isStreaming || isDataMutationInProgress) return;
+    get().activeRequestController?.abort();
+    const requestId = generateId();
+    const requestController = new AbortController();
 
     // Switch to biography screen immediately with streaming state
     set({
@@ -550,90 +872,99 @@ export const useGameStore = create<GameState>((set, get) => ({
       isLoading: false,
       isStreaming: true,
       streamedText: '',
+      activeRequestId: requestId,
+      activeRequestController: requestController,
     });
 
     try {
       const llmConfig = configToLlm(config);
       // Biography needs more output tokens (2000-4000 Chinese characters)
       const bioLlmConfig = { ...llmConfig, maxTokens: 8192 };
-
-      // Determine if the journey ended naturally or was stopped mid-way
-      const isComplete = session.endReason === 'story_ending'
-        || session.endReason === 'max_choices'
-        || session.endReason === 'max_history'
-        || !session.endReason; // no endReason means natural/complete end
-
-      let worldContent = '';
-      try {
-        worldContent = await loadBuiltInWorld(session.world, 'single');
-      } catch {
-        try {
-          worldContent = await loadBuiltInWorld(session.world, 'directory');
-        } catch {
-          worldContent = '未知世界';
-        }
-      }
-
-      // Use compressed world themes + compressed history for biography
-      // This preserves narrative richness while fitting within token limits
-      const worldThemes = prompts.extractWorldThemes(worldContent);
-      const biographyHistory = prompts.formatHistoryForBiography(
-        session.player.history,
-        session.player.summary,
-        isComplete
-      );
-
-      const bioPrompt = prompts.format(prompts.biographyPrompt(isComplete), {
-        world_context: worldThemes,
-        system_context: session.system || '',
-        player_name: session.player.name,
-        player_history: biographyHistory,
-      });
-
-      const biography = await streamChatText(
-        [{ role: 'user', content: bioPrompt }],
+      const workingSession = JSON.parse(JSON.stringify(session)) as GameSession;
+      await engine.generateBiography(
+        workingSession,
+        workingSession.worldRef.source === 'builtin',
+        workingSession.worldRef.type,
         bioLlmConfig,
         (token) => {
-          if (token) set((state) => ({ streamedText: state.streamedText + token }));
-        }
+          if (token && get().activeRequestId === requestId) {
+            set((state) => ({ streamedText: state.streamedText + token }));
+          }
+        },
+        requestController.signal
       );
 
-      const updatedSession = { ...session, biography };
-      await storage.saveSession(updatedSession);
+      if (get().activeRequestId !== requestId) return;
+      await persistSession(workingSession);
+      if (get().activeRequestId !== requestId) return;
 
       set({
-        session: updatedSession,
+        session: workingSession,
         isStreaming: false,
         streamedText: '',
+        activeRequestId: null,
+        activeRequestController: null,
       });
     } catch (err) {
       errorLogger.error('generateBiography failed', { playerName: session.player.name }, err as Error);
-      set({
-        error: formatErrorMessage(err, '生成传记失败'),
-        isStreaming: false,
-        streamedText: '',
-      });
+      if (get().activeRequestId === requestId) {
+        set({
+          error: formatErrorMessage(err, '生成传记失败'),
+          isStreaming: false,
+          streamedText: '',
+          activeRequestId: null,
+          activeRequestController: null,
+        });
+      }
     }
   },
 
-  endGame: (generateBio = true) => {
-    set({ showConfirmEnd: false, showConfirmBio: false });
-    const { session, storage } = get();
+  endGame: async (generateBio = true) => {
+    if (get().isDataMutationInProgress) return;
+    get().activeRequestController?.abort();
+    set({
+      showConfirmEnd: false,
+      showConfirmBio: false,
+      isStreaming: false,
+      streamedText: '',
+      activeRequestId: null,
+      activeRequestController: null,
+    });
+    const { session } = get();
     if (session) {
-      session.isActive = false;
-      session.endReason = 'player_ended';
-      storage.saveSession(session);
+      const endedSession = { ...session, isActive: false, endReason: 'player_ended' as const };
+      set({ session: endedSession });
+      try {
+        await persistSession(endedSession);
+      } catch (err) {
+        errorLogger.error('endGame persistence failed', { sessionId: session.sessionId }, err as Error);
+        if (get().session?.sessionId === session.sessionId
+          && get().session?.endReason === 'player_ended') {
+          set({ session });
+        }
+        set({ error: formatErrorMessage(err, '保存结束状态失败') });
+        throw err;
+      }
     }
     if (generateBio) {
-      get().generateBiography();
+      await get().generateBiography();
     }
   },
 
   skipBiography: () => {
-    set({ showConfirmBio: false, currentScreen: 'start' });
+    get().activeRequestController?.abort();
+    set({
+      showConfirmBio: false,
+      currentScreen: 'start',
+      isStreaming: false,
+      streamedText: '',
+      activeRequestId: null,
+      activeRequestController: null,
+    });
   },
 
   newGame: () => {
+    get().activeRequestController?.abort();
     set({
       currentScreen: 'start',
       session: null,
@@ -642,12 +973,14 @@ export const useGameStore = create<GameState>((set, get) => ({
       selectedSystem: null,
       streamedText: '',
       isStreaming: false,
+      activeRequestId: null,
+      activeRequestController: null,
     });
   },
 
-  checkResume: async () => {
+  checkResume: async (options) => {
     try {
-      const sessions = await get().storage.listSessions(true);
+      const { sessions, corruptedSessions } = await get().storage.listSessionsDetailed(true);
       const summaries: SessionSummary[] = sessions.map((s) => ({
         sessionId: s.sessionId,
         world: s.world,
@@ -656,11 +989,32 @@ export const useGameStore = create<GameState>((set, get) => ({
         historyLength: s.player.history.length,
         createdAt: s.createdAt,
       }));
-      set({ resumeSessions: summaries });
-    } catch {
-      // No sessions to resume
+      const resumeWarning = corruptedSessions.length > 0
+        ? `已跳过 ${corruptedSessions.length} 个损坏会话（${corruptedSessions
+          .map((session) => session.sessionId)
+          .join('、')}），其他旅程仍可继续。`
+        : null;
+      set({ resumeSessions: summaries, resumeWarning });
+    } catch (err) {
+      set({
+        resumeSessions: [],
+        resumeWarning: null,
+        error: formatErrorMessage(err, '读取可恢复会话失败'),
+      });
+      if (options?.throwOnError) throw err;
     }
   },
+
+  prepareForDataMutation: async () => {
+    if (get().isDataMutationInProgress) {
+      throw new Error('已有数据操作正在进行，请稍候');
+    }
+    set({ isDataMutationInProgress: true });
+    invalidateActiveRequest();
+    await Promise.allSettled([...pendingSessionWrites]);
+  },
+
+  finishDataMutation: () => set({ isDataMutationInProgress: false }),
 
   deleteSession: async (sessionId: string) => {
     const storage = get().storage;
@@ -683,8 +1037,11 @@ export const useGameStore = create<GameState>((set, get) => ({
 
         set({
           session,
-          currentScenario: session.scenarios[session.scenarios.length - 1],
-          currentScreen: session.isActive ? 'game' : 'biography',
+          currentScenario: session.player.currentScenario
+            ? session.scenarios.find((scenario) => scenario.id === session.player.currentScenario)
+              ?? session.scenarios[session.scenarios.length - 1]
+            : session.scenarios[session.scenarios.length - 1],
+          currentScreen: session.isActive || !session.biography ? 'game' : 'biography',
         });
       }
     } catch (err) {
@@ -848,17 +1205,29 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   // QA actions
   askQuestion: async (question) => {
-    const { session, config, storage, engine } = get();
-    if (!session || !config) return;
+    const {
+      session,
+      config,
+      engine,
+      settings,
+      isStreaming,
+      isDataMutationInProgress,
+    } = get();
+    if (!session || !config || isStreaming || isDataMutationInProgress) return;
 
     // Prevent duplicate consecutive questions
     const currentHistory = session.player.qaHistory ?? [];
+    const historyLimit = Math.max(1, Math.floor(settings.maxQaHistory));
     if (currentHistory.length > 0) {
       const lastMsg = currentHistory[currentHistory.length - 1];
       if (lastMsg.role === 'user' && lastMsg.content === question) {
         return;
       }
     }
+
+    get().activeRequestController?.abort();
+    const requestId = generateId();
+    const requestController = new AbortController();
 
     // Create new session with user question added
     const updatedSession = {
@@ -876,21 +1245,33 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({
       session: updatedSession,
       streamedText: '',
+      isStreaming: true,
+      activeRequestId: requestId,
+      activeRequestController: requestController,
     });
 
     try {
       const llmConfig = configToLlm(config);
+      const querySession = {
+        ...session,
+        player: {
+          ...session.player,
+          qaHistory: currentHistory.slice(-historyLimit),
+        },
+      };
       const answer = await engine.answerQuery(
-        updatedSession,
+        querySession,
         question,
-        true,
-        'single',
         llmConfig,
         (token) => {
-          if (token) set((state) => ({ streamedText: state.streamedText + token }));
-        }
+          if (token && get().activeRequestId === requestId) {
+            set((state) => ({ streamedText: state.streamedText + token }));
+          }
+        },
+        requestController.signal
       );
 
+      if (get().activeRequestId !== requestId) return;
       // Build final session with assistant answer
       const finalSession = {
         ...updatedSession,
@@ -899,23 +1280,33 @@ export const useGameStore = create<GameState>((set, get) => ({
           qaHistory: [
             ...updatedSession.player.qaHistory,
             { role: 'assistant' as const, content: answer, id: generateQaId() },
-          ],
+          ].slice(-historyLimit),
         },
       };
 
-      await storage.saveSession(finalSession);
+      await persistSession(finalSession);
+      if (get().activeRequestId !== requestId) return;
 
       // Clear streamedText after QA is done
       set({
         session: finalSession,
         streamedText: '',
+        isStreaming: false,
+        activeRequestId: null,
+        activeRequestController: null,
       });
     } catch (err) {
       errorLogger.error('askQuestion failed', { question }, err as Error);
-      set({
-        error: formatErrorMessage(err, '问答失败'),
-        streamedText: '',
-      });
+      if (get().activeRequestId === requestId) {
+        set({
+          session,
+          error: formatErrorMessage(err, '问答失败'),
+          streamedText: '',
+          isStreaming: false,
+          activeRequestId: null,
+          activeRequestController: null,
+        });
+      }
     }
   },
 
@@ -925,4 +1316,5 @@ export const useGameStore = create<GameState>((set, get) => ({
   setShowConfirmBio: (show) => set({ showConfirmBio: show }),
   appendStreamedText: (text) =>
     set((state) => ({ streamedText: state.streamedText + text })),
-}));
+  });
+});

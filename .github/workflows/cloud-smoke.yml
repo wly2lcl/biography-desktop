@@ -1,0 +1,23 @@
+name: Protected Cloud API Smoke
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    environment: cloud-smoke
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [deepseek, openai]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Minimal real-provider request
+        env:
+          PROVIDER: ${{ matrix.provider }}
+          API_KEY: ${{ matrix.provider == 'deepseek' && secrets.DEEPSEEK_API_KEY || secrets.OPENAI_API_KEY }}
+        run: node scripts/cloud-smoke.mjs

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { LLMError } from './llm';
 import { withRetry, apiCall } from './retry';
 
 describe('withRetry', () => {
@@ -6,6 +7,12 @@ describe('withRetry', () => {
     const fn = vi.fn().mockResolvedValue('success');
     const result = await withRetry(fn, { maxAttempts: 3 });
     expect(result).toBe('success');
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('still performs one attempt when maxAttempts is zero', async () => {
+    const fn = vi.fn().mockResolvedValue('success');
+    await expect(withRetry(fn, { maxAttempts: 0 })).resolves.toBe('success');
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
@@ -41,6 +48,22 @@ describe('withRetry', () => {
   it('should NOT retry HTTP 4xx (except 429)', async () => {
     const fn = vi.fn().mockRejectedValue(new Error('HTTP 401'));
     await expect(withRetry(fn, { maxAttempts: 3, initialDelayMs: 10, maxDelayMs: 50, jitterMs: 0 })).rejects.toThrow('HTTP 401');
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels an in-progress retry backoff immediately', async () => {
+    const controller = new AbortController();
+    const fn = vi.fn().mockRejectedValue(new LLMError('server', 'unavailable', 503));
+    const pending = withRetry(fn, {
+      maxAttempts: 3,
+      initialDelayMs: 60_000,
+      jitterMs: 0,
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => expect(fn).toHaveBeenCalledTimes(1));
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ code: 'cancelled' });
     expect(fn).toHaveBeenCalledTimes(1);
   });
 });

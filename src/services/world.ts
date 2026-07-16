@@ -1,6 +1,8 @@
 // src/services/world.ts - World data loading
 
 import type { WorldMeta } from '../types/world';
+import type { WorldRef } from '../types/models';
+import { isTauriRuntime } from './runtime';
 
 export interface LoadedWorld {
   name: string;
@@ -72,7 +74,7 @@ export async function loadBuiltInWorld(
   type: 'single' | 'directory'
 ): Promise<string> {
   cleanupExpired();
-  const cacheKey = `builtin:${filename}`;
+  const cacheKey = `builtin:${type}:${filename}`;
   const cached = WORLD_CACHE.get(cacheKey);
 
   if (cached && Date.now() - cached.timestamp < DEFAULT_TTL) {
@@ -243,27 +245,54 @@ export function extractWorldDescription(content: string): string {
  * Get world context for LLM prompts
  * Priority: README > WORLD_OVERVIEW > GEOGRAPHY > ...
  */
-export async function getWorldContext(
-  worldName: string,
-  isBuiltIn: boolean,
-  type: 'single' | 'directory'
-): Promise<string> {
-  if (isBuiltIn) {
-    return await loadBuiltInWorld(worldName, type);
-  } else if (isTauri()) {
-    return await loadUserWorld(worldName);
-  } else {
-    // Web mode user world
-    const content = localStorage.getItem(`bio_world_${worldName}`);
-    if (content) return content;
-    throw new Error(`World not found: ${worldName}`);
+async function loadExactWorld(ref: WorldRef): Promise<string> {
+  if (ref.source === 'builtin') {
+    return loadBuiltInWorld(ref.name, ref.type);
   }
+  if (isTauri()) return loadUserWorld(ref.name);
+  const content = localStorage.getItem(`bio_world_${ref.name}`);
+  if (content) return content;
+  throw new Error(`World not found: ${ref.name}`);
+}
+
+export async function getWorldContext(world: WorldRef): Promise<string> {
+  return loadExactWorld(world);
+}
+
+/** Resolve the metadata that legacy sessions omitted. */
+export async function resolveWorldRef(worldName: string): Promise<WorldRef> {
+  const match = (await listWorlds()).find((world) => world.filename === worldName);
+  if (match) {
+    return {
+      name: match.filename,
+      source: match.isBuiltIn ? 'builtin' : 'user',
+      type: match.type,
+    };
+  }
+
+  const candidates: WorldRef[] = [
+    { name: worldName, source: 'builtin', type: 'single' },
+    { name: worldName, source: 'builtin', type: 'directory' },
+    { name: worldName, source: 'user', type: 'single' },
+    { name: worldName, source: 'user', type: 'directory' },
+  ];
+  for (const candidate of candidates) {
+    try {
+      await loadExactWorld(candidate);
+      return candidate;
+    } catch {
+      // Probe the next legacy location.
+    }
+  }
+
+  // Preserve the historical default so the eventual load reports the
+  // original built-in single-file error instead of inventing metadata.
+  return candidates[0];
 }
 
 /**
  * Check if running in Tauri mode
  */
 export function isTauri(): boolean {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return typeof window !== 'undefined' && !!(window as any).__TAURI__;
+  return isTauriRuntime();
 }

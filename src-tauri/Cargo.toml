@@ -5,6 +5,10 @@ description = "LLM-driven interactive biographical narrative desktop app"
 authors = []
 edition = "2021"
 
+[features]
+default = []
+local-model = []
+
 [lib]
 name = "biography_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]

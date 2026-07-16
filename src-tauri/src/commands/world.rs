@@ -3,31 +3,42 @@
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager, State};
+use tauri::State;
 
 use crate::AppDb;
 
-fn get_worlds_dir(app: &AppHandle) -> PathBuf {
-    app.path().app_data_dir().unwrap().join("worlds")
+fn get_worlds_dir(state: &AppDb) -> PathBuf {
+    state.data_dir.join("worlds")
 }
 
-#[allow(dead_code)]
-fn get_builtin_worlds_dir(app: &AppHandle) -> PathBuf {
-    // Built-in worlds are in the resources/public/worlds directory
-    // In development, this is relative to the project root
-    let resource_path = app.path().resolve(
-        "worlds",
-        tauri::path::BaseDirectory::Resource,
-    );
-    match resource_path {
-        Ok(p) => p,
-        Err(_) => {
-            // Fallback: use a known path for development
-            let mut p = std::env::current_dir().unwrap();
-            p.push("public/worlds");
-            p
-        }
+fn validate_world_component(value: &str) -> Result<(), String> {
+    if value.trim().is_empty()
+        || value == "."
+        || value == ".."
+        || value.contains('/')
+        || value.contains('\\')
+        || value.contains('\0')
+        || value
+            .chars()
+            .any(|character| matches!(character, '<' | '>' | ':' | '"' | '|' | '?' | '*'))
+        || value.ends_with('.')
+        || value.ends_with(' ')
+    {
+        return Err("Invalid world name".to_string());
     }
+    Ok(())
+}
+
+fn canonical_managed_path(
+    root: &std::path::Path,
+    path: &std::path::Path,
+) -> Result<PathBuf, String> {
+    let canonical_root = root.canonicalize().map_err(|e| e.to_string())?;
+    let canonical_path = path.canonicalize().map_err(|e| e.to_string())?;
+    if !canonical_path.starts_with(&canonical_root) {
+        return Err("Path traversal detected".to_string());
+    }
+    Ok(canonical_path)
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -48,8 +59,8 @@ pub struct WorldMeta {
 }
 
 #[tauri::command]
-pub async fn list_worlds(app: AppHandle) -> Result<Vec<WorldMeta>, String> {
-    let worlds_dir = get_worlds_dir(&app);
+pub async fn list_worlds(state: State<'_, AppDb>) -> Result<Vec<WorldMeta>, String> {
+    let worlds_dir = get_worlds_dir(&state);
     let mut worlds = Vec::new();
 
     if !worlds_dir.exists() {
@@ -59,15 +70,16 @@ pub async fn list_worlds(app: AppHandle) -> Result<Vec<WorldMeta>, String> {
     for entry in fs::read_dir(&worlds_dir).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
-        let filename = entry
-            .file_name()
-            .to_string_lossy()
-            .to_string();
+        let filename = entry.file_name().to_string_lossy().to_string();
+        let canonical = match canonical_managed_path(&worlds_dir, &path) {
+            Ok(path) => path,
+            Err(_) => continue,
+        };
 
-        if path.is_file() && filename.ends_with(".md") {
-            let content = fs::read_to_string(&path).unwrap_or_default();
+        if canonical.is_file() && filename.ends_with(".md") {
+            let content = fs::read_to_string(&canonical).unwrap_or_default();
             let description = extract_description(&content);
-            let metadata = path.metadata().map_err(|e| e.to_string())?;
+            let metadata = canonical.metadata().map_err(|e| e.to_string())?;
 
             worlds.push(WorldMeta {
                 name: filename.replace(".md", "").replace('_', " "),
@@ -77,17 +89,21 @@ pub async fn list_worlds(app: AppHandle) -> Result<Vec<WorldMeta>, String> {
                 is_builtin: false,
                 file_size: metadata.len(),
                 file_count: 1,
-                last_modified: format_timestamp(&metadata.modified().unwrap_or(std::time::SystemTime::now())),
+                last_modified: format_timestamp(
+                    &metadata.modified().unwrap_or(std::time::SystemTime::now()),
+                ),
             });
-        } else if path.is_dir() {
-            let readme_path = path.join("README.md");
+        } else if canonical.is_dir() {
+            let readme_path = canonical.join("README.md");
             let content = if readme_path.exists() {
-                fs::read_to_string(&readme_path).unwrap_or_default()
+                canonical_managed_path(&canonical, &readme_path)
+                    .and_then(|readme| fs::read_to_string(readme).map_err(|e| e.to_string()))
+                    .unwrap_or_default()
             } else {
                 String::new()
             };
             let description = extract_description(&content);
-            let (file_count, total_size) = count_dir_files(&path);
+            let (file_count, total_size) = count_dir_files(&canonical);
 
             worlds.push(WorldMeta {
                 name: filename.replace('_', " "),
@@ -106,31 +122,25 @@ pub async fn list_worlds(app: AppHandle) -> Result<Vec<WorldMeta>, String> {
 }
 
 #[tauri::command]
-pub async fn load_world(
-    app: AppHandle,
-    filename: String,
-) -> Result<String, String> {
+pub async fn load_world(state: State<'_, AppDb>, filename: String) -> Result<String, String> {
     // Security check: prevent path traversal
     if filename.contains("..") || filename.starts_with('/') || filename.contains('\\') {
         return Err("Invalid filename".to_string());
     }
 
-    let worlds_dir = get_worlds_dir(&app);
+    let worlds_dir = get_worlds_dir(&state);
     let path = worlds_dir.join(&filename);
 
     // Path safety check
-    let canonical = path.canonicalize().map_err(|e| e.to_string())?;
-    let canonical_dir = worlds_dir.canonicalize().map_err(|e| e.to_string())?;
-    if !canonical.starts_with(&canonical_dir) {
-        return Err("Path traversal detected".to_string());
-    }
+    canonical_managed_path(&worlds_dir, &path)?;
 
     if path.is_file() {
         fs::read_to_string(&path).map_err(|e| e.to_string())
     } else if path.is_dir() {
         let readme = path.join("README.md");
         if readme.exists() {
-            fs::read_to_string(&readme).map_err(|e| e.to_string())
+            let canonical_readme = canonical_managed_path(&worlds_dir, &readme)?;
+            fs::read_to_string(canonical_readme).map_err(|e| e.to_string())
         } else {
             Err("No README.md found".to_string())
         }
@@ -141,16 +151,13 @@ pub async fn load_world(
 
 #[tauri::command]
 pub async fn save_world(
-    app: AppHandle,
+    state: State<'_, AppDb>,
     world_name: String,
     content: String,
 ) -> Result<(), String> {
-    // Security check: prevent path traversal
-    if world_name.contains("..") || world_name.starts_with('/') || world_name.contains('\\') {
-        return Err("Invalid world name".to_string());
-    }
+    validate_world_component(&world_name)?;
 
-    let worlds_dir = get_worlds_dir(&app);
+    let worlds_dir = get_worlds_dir(&state);
     fs::create_dir_all(&worlds_dir).map_err(|e| e.to_string())?;
 
     let filename = format!("{}.md", world_name);
@@ -167,24 +174,17 @@ pub async fn save_world(
 }
 
 #[tauri::command]
-pub async fn delete_world(
-    app: AppHandle,
-    world_name: String,
-) -> Result<(), String> {
+pub async fn delete_world(state: State<'_, AppDb>, world_name: String) -> Result<(), String> {
     // Security check: prevent path traversal
     if world_name.contains("..") || world_name.starts_with('/') || world_name.contains('\\') {
         return Err("Invalid world name".to_string());
     }
 
-    let worlds_dir = get_worlds_dir(&app);
+    let worlds_dir = get_worlds_dir(&state);
     let path = worlds_dir.join(&world_name);
 
     // Path safety check
-    let canonical_parent = worlds_dir.canonicalize().map_err(|e| e.to_string())?;
-    let canonical = path.canonicalize().map_err(|e| e.to_string())?;
-    if !canonical.starts_with(&canonical_parent) {
-        return Err("Path traversal detected".to_string());
-    }
+    canonical_managed_path(&worlds_dir, &path)?;
 
     if path.is_dir() {
         fs::remove_dir_all(&path).map_err(|e| e.to_string())
@@ -194,24 +194,17 @@ pub async fn delete_world(
 }
 
 #[tauri::command]
-pub async fn export_world(
-    app: AppHandle,
-    world_name: String,
-) -> Result<String, String> {
+pub async fn export_world(state: State<'_, AppDb>, world_name: String) -> Result<String, String> {
     // Security check: prevent path traversal
     if world_name.contains("..") || world_name.starts_with('/') || world_name.contains('\\') {
         return Err("Invalid world name".to_string());
     }
 
-    let worlds_dir = get_worlds_dir(&app);
+    let worlds_dir = get_worlds_dir(&state);
     let path = worlds_dir.join(&world_name);
 
     // Path safety check
-    let canonical_parent = worlds_dir.canonicalize().map_err(|e| e.to_string())?;
-    let canonical = path.canonicalize().map_err(|e| e.to_string())?;
-    if !canonical.starts_with(&canonical_parent) {
-        return Err("Path traversal detected".to_string());
-    }
+    canonical_managed_path(&worlds_dir, &path)?;
 
     if path.is_file() {
         // Return the content directly
@@ -228,24 +221,24 @@ pub async fn export_world(
 
 #[tauri::command]
 pub async fn import_world(
-    app: AppHandle,
+    state: State<'_, AppDb>,
     source_path: String,
     dest_name: String,
 ) -> Result<(), String> {
-    // Security check: prevent path traversal in destination
-    if dest_name.contains("..") || dest_name.starts_with('/') || dest_name.contains('\\') {
-        return Err("Invalid destination name".to_string());
-    }
+    validate_world_component(&dest_name).map_err(|_| "Invalid destination name".to_string())?;
 
     // Security check: prevent path traversal in source
     if source_path.contains("..") {
         return Err("Invalid source path".to_string());
     }
 
-    let worlds_dir = get_worlds_dir(&app);
+    let worlds_dir = get_worlds_dir(&state);
     fs::create_dir_all(&worlds_dir).map_err(|e| e.to_string())?;
 
     let source = PathBuf::from(&source_path);
+    if !source.exists() {
+        return Err("Import source not found".to_string());
+    }
     let dest = worlds_dir.join(&dest_name);
 
     // Verify destination stays within worlds_dir
@@ -261,6 +254,8 @@ pub async fn import_world(
         fs::copy(&source, &dest).map_err(|e| e.to_string())?;
     } else if source.is_dir() {
         copy_dir_all(&source, &dest).map_err(|e| e.to_string())?;
+    } else {
+        return Err("Unsupported import source".to_string());
     }
 
     Ok(())
@@ -272,6 +267,7 @@ pub async fn export_worlds(
     filenames: Vec<String>,
 ) -> Result<String, String> {
     let worlds_dir = state.data_dir.join("worlds");
+    let canonical_worlds_dir = worlds_dir.canonicalize().map_err(|e| e.to_string())?;
     let mut world_data = serde_json::Map::new();
 
     for filename in &filenames {
@@ -282,18 +278,22 @@ pub async fn export_worlds(
 
         let path = worlds_dir.join(filename);
         if path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                world_data.insert(filename.clone(), Value::String(content));
-            }
+            let canonical = canonical_managed_path(&canonical_worlds_dir, &path)?;
+            let content = if canonical.is_dir() {
+                collect_dir_content(&canonical)?
+            } else {
+                std::fs::read_to_string(&canonical).map_err(|e| e.to_string())?
+            };
+            world_data.insert(filename.clone(), Value::String(content));
         }
     }
 
-    Ok(serde_json::to_string(&Value::Object(world_data)).map_err(|e| e.to_string())?)
+    serde_json::to_string(&Value::Object(world_data)).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn open_worlds_folder(app: AppHandle) -> Result<(), String> {
-    let worlds_dir = get_worlds_dir(&app);
+pub async fn open_worlds_folder(state: State<'_, AppDb>) -> Result<(), String> {
+    let worlds_dir = get_worlds_dir(&state);
     // Use tauri-plugin-shell to open the folder
     // For now, return success (actual implementation needs shell plugin)
     log::info!("Opening worlds folder: {:?}", worlds_dir);
@@ -309,10 +309,12 @@ fn extract_description(content: &str) -> String {
         .find(|line| !line.trim().is_empty() && !line.trim().starts_with('#'))
         .map(|line| {
             let trimmed = line.trim();
-            if trimmed.len() > 200 {
-                format!("{}…", &trimmed[..200])
+            let mut characters = trimmed.chars();
+            let preview: String = characters.by_ref().take(200).collect();
+            if characters.next().is_some() {
+                format!("{preview}…")
             } else {
-                trimmed.to_string()
+                preview
             }
         })
         .unwrap_or_default()
@@ -337,14 +339,21 @@ fn count_dir_files(dir: &PathBuf) -> (usize, u64) {
 
 fn collect_dir_content(dir: &PathBuf) -> Result<String, String> {
     let mut content = String::new();
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                if let Ok(c) = fs::read_to_string(&path) {
-                    content.push_str(&format!("--- {} ---\n{}\n\n", path.display(), c));
-                }
-            }
+    let mut paths: Vec<PathBuf> = fs::read_dir(dir)
+        .map_err(|e| e.to_string())?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .collect();
+    paths.sort();
+    for path in paths {
+        let canonical = canonical_managed_path(dir, &path)?;
+        if let Ok(file_content) = fs::read_to_string(canonical) {
+            let filename = path
+                .file_name()
+                .map(|name| name.to_string_lossy())
+                .unwrap_or_default();
+            content.push_str(&format!("--- {filename} ---\n{file_content}\n\n"));
         }
     }
     Ok(content)
@@ -376,7 +385,15 @@ fn format_timestamp(time: &std::time::SystemTime) -> String {
     let secs = secs % 60;
     let year = 1970 + days / 365;
     let day_of_year = days % 365;
-    format!("{}-{:02}-{:02} {:02}:{:02}:{:02}", year, (day_of_year / 30) + 1, (day_of_year % 30) + 1, hours, mins, secs)
+    format!(
+        "{}-{:02}-{:02} {:02}:{:02}:{:02}",
+        year,
+        (day_of_year / 30) + 1,
+        (day_of_year % 30) + 1,
+        hours,
+        mins,
+        secs
+    )
 }
 
 #[cfg(test)]
@@ -442,11 +459,7 @@ mod tests {
         ];
         for name in &names {
             let blocked = name.contains("..") || name.starts_with('/') || name.contains('\\');
-            assert!(
-                blocked,
-                "Path traversal attack should be blocked: {}",
-                name
-            );
+            assert!(blocked, "Path traversal attack should be blocked: {}", name);
         }
     }
 
@@ -473,6 +486,33 @@ mod tests {
     }
 
     #[test]
+    fn test_world_component_rejects_path_separators_and_empty_names() {
+        for name in [
+            "",
+            "   ",
+            ".",
+            "..",
+            "nested/world",
+            "nested\\world",
+            "bad\0name",
+            "bad:name",
+            "bad*name",
+            "trailing.",
+        ] {
+            assert!(
+                validate_world_component(name).is_err(),
+                "should reject {name:?}"
+            );
+        }
+        for name in ["mine", "mine_world", "世界-1"] {
+            assert!(
+                validate_world_component(name).is_ok(),
+                "should accept {name:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_invalid_filenames_rejected_by_validation() {
         // Names that should be rejected by the path-traversal checks
         let bad_names = [
@@ -484,11 +524,7 @@ mod tests {
         ];
         for name in &bad_names {
             let blocked = name.contains("..") || name.starts_with('/') || name.contains('\\');
-            assert!(
-                blocked,
-                "Invalid name should be blocked: {}",
-                name
-            );
+            assert!(blocked, "Invalid name should be blocked: {}", name);
         }
     }
 
@@ -528,9 +564,17 @@ mod tests {
         let long = "A".repeat(250);
         let content = format!("# Title\n{}", long);
         let result = extract_description(&content);
-        assert_eq!(result.len(), 201); // 200 chars + '…'
+        assert_eq!(result.chars().count(), 201); // 200 chars + '…'
         assert!(result.ends_with('…'));
         assert_eq!(&result[..200], &"A".repeat(200));
+    }
+
+    #[test]
+    fn test_extract_description_truncates_unicode_on_character_boundary() {
+        let content = format!("# 标题\n{}", "界".repeat(250));
+        let result = extract_description(&content);
+        assert_eq!(result.chars().count(), 201);
+        assert!(result.ends_with('…'));
     }
 
     #[test]
@@ -639,5 +683,44 @@ mod tests {
         let (count, size) = count_dir_files(&dir);
         assert_eq!(count, 0);
         assert_eq!(size, 0);
+    }
+
+    #[test]
+    fn test_collect_dir_content_is_deterministic_and_hides_absolute_paths() {
+        let dir = std::env::temp_dir().join(format!("bio_export_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("b.md"), "B").unwrap();
+        std::fs::write(dir.join("a.md"), "A").unwrap();
+
+        let exported = collect_dir_content(&dir).unwrap();
+        assert_eq!(exported, "--- a.md ---\nA\n\n--- b.md ---\nB\n\n");
+        assert!(!exported.contains(dir.to_string_lossy().as_ref()));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_managed_path_rejects_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!("bio_world_root_{}", uuid::Uuid::new_v4()));
+        let outside =
+            std::env::temp_dir().join(format!("bio_world_outside_{}.md", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&outside, "secret").unwrap();
+        let linked = root.join("linked.md");
+        symlink(&outside, &linked).unwrap();
+        let directory = root.join("directory");
+        std::fs::create_dir_all(&directory).unwrap();
+        let nested_link = directory.join("nested.md");
+        symlink(&outside, &nested_link).unwrap();
+
+        assert!(canonical_managed_path(&root, &linked).is_err());
+        assert!(collect_dir_content(&directory).is_err());
+        std::fs::remove_file(linked).unwrap();
+        std::fs::remove_file(nested_link).unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+        std::fs::remove_file(outside).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

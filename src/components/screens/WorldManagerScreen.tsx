@@ -1,7 +1,8 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useGameStore } from '@/store/gameStore';
 import ConfirmModal from '@/components/common/ConfirmModal';
-import { isTauri } from '@/services/world';
+import { getWorldContext, isTauri } from '@/services/world';
+import { getErrorMessage } from '@/utils/errors';
 
 /* ──────────────────────────────────────────────────────────
    Local types — extend store WorldInfo with metadata needed
@@ -20,8 +21,6 @@ interface WorldEntry {
 
 interface WorldFormData {
   name: string;
-  description: string;
-  type: 'single' | 'directory';
   content: string;
 }
 
@@ -32,13 +31,14 @@ type ModalMode = 'closed' | 'new' | 'edit';
  * export, and delete world definitions.
  */
 export default function WorldManagerScreen() {
-  const { worlds, loadWorlds, setShowWorldManager } = useGameStore();
+  const { worlds, session, loadWorlds, setShowWorldManager } = useGameStore();
 
   const [entries, setEntries] = useState<WorldEntry[]>([]);
   const [builtInEntries, setBuiltInEntries] = useState<WorldEntry[]>([]);
   const [userEntries, setUserEntries] = useState<WorldEntry[]>([]);
   const [modalMode, setModalMode] = useState<ModalMode>('closed');
   const [editingEntry, setEditingEntry] = useState<WorldEntry | null>(null);
+  const [editingContent, setEditingContent] = useState('');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<WorldEntry | null>(null);
   const [previewContent, setPreviewContent] = useState<string | null>(null);
   const [previewName, setPreviewName] = useState('');
@@ -51,10 +51,10 @@ export default function WorldManagerScreen() {
       name: w.name,
       filename: w.filename,
       description: w.description,
-      isBuiltIn: true, // store lists built-in + user; deferred to invokes
-      type: w.filename.endsWith('.md') ? 'single' : 'directory',
+      isBuiltIn: w.isBuiltIn,
+      type: w.type,
       fileSize: 0,
-      fileCount: 1,
+      fileCount: w.type === 'single' ? 1 : 0,
     }));
     setEntries(mapped);
   }, [worlds]);
@@ -79,34 +79,17 @@ export default function WorldManagerScreen() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [setShowWorldManager]);
 
-  // ── Preview built-in world ─────────────────────────
+  // ── Preview world ──────────────────────────────────
   const handlePreview = useCallback(async (entry: WorldEntry) => {
     try {
-      if (entry.isBuiltIn) {
-        const res = await fetch(`/worlds/${entry.filename}`);
-        if (res.ok) {
-          const content = await res.text();
-          setPreviewName(entry.name);
-          setPreviewContent(content || '(空)');
-          return;
-        }
-      } else if (!isTauri()) {
-        // Web mode user world
-        const content = localStorage.getItem(`bio_world_${entry.filename}`);
-        if (content) {
-          setPreviewName(entry.name);
-          setPreviewContent(content || '(空)');
-          return;
-        }
-      } else {
-        const { invoke } = await import('@tauri-apps/api/core');
-        const content = (await invoke('load_world', {
-          filename: entry.filename,
-        })) as string;
-        setPreviewName(entry.name);
-        setPreviewContent(content || '(空)');
-        return;
-      }
+      const content = await getWorldContext({
+        name: entry.filename,
+        source: entry.isBuiltIn ? 'builtin' : 'user',
+        type: entry.type,
+      });
+      setPreviewName(entry.name);
+      setPreviewContent(content || '(空)');
+      return;
     } catch {
       // fallthrough
     }
@@ -114,19 +97,38 @@ export default function WorldManagerScreen() {
     setPreviewContent('(无法加载世界内容)');
   }, []);
 
+  const handleEdit = useCallback(async (entry: WorldEntry) => {
+    if (entry.isBuiltIn || entry.type !== 'single') return;
+    try {
+      const content = await getWorldContext({
+        name: entry.filename,
+        source: 'user',
+        type: 'single',
+      });
+      setEditingEntry(entry);
+      setEditingContent(content);
+      setPreviewContent(null);
+      setModalMode('edit');
+    } catch (err) {
+      console.error('Failed to load world for editing:', err);
+      alert(`加载失败，未进入编辑模式: ${getErrorMessage(err, '未知错误')}`);
+    }
+  }, []);
+
   // ── New / Edit save ────────────────────────────────
   const handleSaveWorld = useCallback(
     async (data: WorldFormData) => {
       try {
+        const existingFilename = editingEntry?.filename;
         if (isTauri()) {
           const { invoke } = await import('@tauri-apps/api/core');
           await invoke('save_world', {
-            world_name: data.name,
+            world_name: existingFilename?.replace(/\.md$/i, '') ?? data.name.replace(/\.md$/i, ''),
             content: data.content,
           });
         } else {
           // Web mode: save to localStorage
-          const filename = `${data.name}.md`;
+          const filename = existingFilename ?? `${data.name.replace(/\.md$/i, '')}.md`;
           localStorage.setItem(`bio_world_${filename}`, data.content);
           const existing = JSON.parse(localStorage.getItem('bio_user_worlds') || '[]');
           if (!existing.includes(filename)) {
@@ -137,12 +139,13 @@ export default function WorldManagerScreen() {
         await loadWorlds();
         setModalMode('closed');
         setEditingEntry(null);
+        setEditingContent('');
       } catch (err) {
         console.error('Failed to save world:', err);
-        alert(`保存失败: ${err instanceof Error ? err.message : '未知错误'}`);
+        alert(`保存失败: ${getErrorMessage(err, '未知错误')}`);
       }
     },
-    [loadWorlds],
+    [editingEntry, loadWorlds],
   );
 
   // ── Export world ───────────────────────────────────
@@ -150,15 +153,17 @@ export default function WorldManagerScreen() {
     try {
       let content: string;
       if (entry.isBuiltIn) {
-        const res = await fetch(`/worlds/${entry.filename}`);
-        if (!res.ok) throw new Error('Failed to fetch world');
-        content = await res.text();
+        content = await getWorldContext({
+          name: entry.filename,
+          source: 'builtin',
+          type: entry.type,
+        });
       } else if (!isTauri()) {
         content = localStorage.getItem(`bio_world_${entry.filename}`) || '';
       } else {
         const { invoke } = await import('@tauri-apps/api/core');
-        content = (await invoke('load_world', {
-          filename: entry.filename,
+        content = (await invoke('export_world', {
+          world_name: entry.filename,
         })) as string;
       }
 
@@ -166,20 +171,26 @@ export default function WorldManagerScreen() {
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = url;
-      anchor.download = `${entry.filename}`;
+      anchor.download = entry.type === 'directory' ? `${entry.filename}.md` : entry.filename;
       document.body.appendChild(anchor);
       anchor.click();
       document.body.removeChild(anchor);
       URL.revokeObjectURL(url);
     } catch (err) {
       console.error('Failed to export world:', err);
-      alert(`导出失败: ${err instanceof Error ? err.message : '未知错误'}`);
+      alert(`导出失败: ${getErrorMessage(err, '未知错误')}`);
     }
   }, []);
 
   // ── Delete world ───────────────────────────────────
   const handleDelete = useCallback(async () => {
     if (!showDeleteConfirm) return;
+    if (session?.isActive && session.worldRef.source === 'user'
+      && session.worldRef.name === showDeleteConfirm.filename) {
+      alert('当前会话仍在使用这个世界，请先结束并离开该会话。');
+      setShowDeleteConfirm(null);
+      return;
+    }
     try {
       if (isTauri()) {
         const { invoke } = await import('@tauri-apps/api/core');
@@ -190,11 +201,17 @@ export default function WorldManagerScreen() {
         localStorage.setItem('bio_user_worlds', JSON.stringify(existing.filter((f: string) => f !== showDeleteConfirm.filename)));
       }
       await loadWorlds();
+      setSelectedFilenames((selected) => {
+        const next = new Set(selected);
+        next.delete(showDeleteConfirm.filename);
+        return next;
+      });
+      setShowDeleteConfirm(null);
     } catch (e) {
       console.error('Failed to delete world:', e);
-      alert(`删除失败: ${e instanceof Error ? e.message : '未知错误'}`);
+      alert(`删除失败: ${getErrorMessage(e, '未知错误')}`);
     }
-  }, [showDeleteConfirm, loadWorlds]);
+  }, [showDeleteConfirm, session, loadWorlds]);
 
   // ── Import world from file ─────────────────────────
   const handleImport = useCallback(async () => {
@@ -216,7 +233,7 @@ export default function WorldManagerScreen() {
           // Tauri mode: save via IPC
           const { invoke } = await import('@tauri-apps/api/core');
           await invoke('save_world', {
-            world_name: filename.replace('.md', ''),
+            world_name: filename.replace(/\.md$/i, ''),
             content,
           });
         } else {
@@ -233,7 +250,7 @@ export default function WorldManagerScreen() {
         await loadWorlds();
       } catch (err) {
         console.error('Failed to import world:', err);
-        alert(`导入失败: ${err instanceof Error ? err.message : '未知错误'}`);
+        alert(`导入失败: ${getErrorMessage(err, '未知错误')}`);
       }
 
       // Reset input
@@ -301,7 +318,7 @@ export default function WorldManagerScreen() {
       URL.revokeObjectURL(url);
     } catch (err) {
       console.error('Failed to batch export worlds:', err);
-      alert(`批量导出失败: ${err instanceof Error ? err.message : '未知错误'}`);
+      alert(`批量导出失败: ${getErrorMessage(err, '未知错误')}`);
     }
   }, [userEntries, selectedFilenames]);
 
@@ -318,6 +335,7 @@ export default function WorldManagerScreen() {
                 type="button"
                 onClick={() => {
                   setEditingEntry(null);
+                  setEditingContent('');
                   setModalMode('new');
                 }}
                 className="btn-primary text-sm"
@@ -410,10 +428,7 @@ export default function WorldManagerScreen() {
                     selected={selectedFilenames.has(entry.filename)}
                     onToggleSelect={() => toggleSelection(entry.filename)}
                     onPreview={() => handlePreview(entry)}
-                    onEdit={() => {
-                      setEditingEntry(entry);
-                      setModalMode('edit');
-                    }}
+                    onEdit={entry.type === 'single' ? () => handleEdit(entry) : null}
                     onExport={() => handleExport(entry)}
                     onDelete={() => setShowDeleteConfirm(entry)}
                   />
@@ -437,11 +452,15 @@ export default function WorldManagerScreen() {
       {modalMode !== 'closed' && (
         <WorldFormModal
           mode={modalMode}
-          initial={modalMode === 'edit' && editingEntry ? { name: editingEntry.name, description: editingEntry.description } : undefined}
+          initial={modalMode === 'edit' && editingEntry ? {
+            name: editingEntry.filename.replace(/\.md$/i, ''),
+            content: editingContent,
+          } : undefined}
           onSave={handleSaveWorld}
           onClose={() => {
             setModalMode('closed');
             setEditingEntry(null);
+            setEditingContent('');
           }}
         />
       )}
@@ -462,7 +481,7 @@ export default function WorldManagerScreen() {
       {showDeleteConfirm && (
         <ConfirmModal
           title="删除世界"
-          message={`确定要删除「${showDeleteConfirm.name}」吗？此操作不可撤销。`}
+          message={`确定要删除「${showDeleteConfirm.name}」吗？此操作不可撤销，依赖它的历史会话将无法继续或重新生成传记。`}
           confirmText="删除"
           cancelText="取消"
           danger
@@ -593,14 +612,12 @@ function WorldFormModal({
   onClose,
 }: {
   mode: 'new' | 'edit';
-  initial?: { name: string; description: string };
+  initial?: { name: string; content: string };
   onSave: (data: WorldFormData) => Promise<void>;
   onClose: () => void;
 }) {
   const [name, setName] = useState(initial?.name ?? '');
-  const [description, setDescription] = useState(initial?.description ?? '');
-  const [type, setType] = useState<'single' | 'directory'>('single');
-  const [content, setContent] = useState('');
+  const [content, setContent] = useState(initial?.content ?? '');
   const [saving, setSaving] = useState(false);
 
   const handleSubmit = useCallback(
@@ -609,12 +626,12 @@ function WorldFormModal({
       if (!name.trim()) return;
       setSaving(true);
       try {
-        await onSave({ name: name.trim(), description: description.trim(), type, content });
+        await onSave({ name: name.trim(), content });
       } finally {
         setSaving(false);
       }
     },
-    [name, description, type, content, onSave],
+    [name, content, onSave],
   );
 
   return (
@@ -635,65 +652,10 @@ function WorldFormModal({
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
+              disabled={mode === 'edit'}
               placeholder="世界名称"
               required
               className="input-base"
-            />
-          </div>
-
-          {/* Type selector */}
-          <div>
-            <label className="block text-sm text-gray-300 mb-1.5 font-medium">类型</label>
-            <div className="flex gap-3">
-              <label
-                className={`cursor-pointer px-4 py-2 rounded-lg border text-sm transition-colors ${
-                  type === 'single'
-                    ? 'border-primary-400 bg-primary-400/10 text-primary-200'
-                    : 'border-white/10 bg-dark-800 text-gray-400'
-                }`}
-              >
-                <input
-                  type="radio"
-                  name="world-type"
-                  value="single"
-                  checked={type === 'single'}
-                  onChange={() => setType('single')}
-                  className="sr-only"
-                />
-                单个文件
-              </label>
-              <label
-                className={`cursor-pointer px-4 py-2 rounded-lg border text-sm transition-colors ${
-                  type === 'directory'
-                    ? 'border-primary-400 bg-primary-400/10 text-primary-200'
-                    : 'border-white/10 bg-dark-800 text-gray-400'
-                }`}
-              >
-                <input
-                  type="radio"
-                  name="world-type"
-                  value="directory"
-                  checked={type === 'directory'}
-                  onChange={() => setType('directory')}
-                  className="sr-only"
-                />
-                目录
-              </label>
-            </div>
-          </div>
-
-          {/* Description */}
-          <div>
-            <label htmlFor="world-form-desc" className="block text-sm text-gray-300 mb-1.5 font-medium">
-              描述
-            </label>
-            <textarea
-              id="world-form-desc"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="简短介绍这个世界..."
-              rows={2}
-              className="input-base resize-none"
             />
           </div>
 

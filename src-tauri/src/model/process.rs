@@ -1,6 +1,6 @@
-use std::process::{Child, Command};
-use std::path::Path;
 use crate::model::types::ServerInfo;
+use std::path::Path;
+use std::process::{Child, Command};
 
 /// Manages a running llama-server process
 pub struct LlamaProcess {
@@ -12,7 +12,12 @@ pub struct LlamaProcess {
 
 impl LlamaProcess {
     /// Start llama-server with the given model
-    pub fn start(binary_path: &str, model_path: &str, gpu_layers: u32, context_size: u32) -> Result<Self, String> {
+    pub fn start(
+        binary_path: &str,
+        model_path: &str,
+        gpu_layers: u32,
+        context_size: u32,
+    ) -> Result<Self, String> {
         let port = Self::find_available_port()?;
 
         let model_name = Path::new(model_path)
@@ -21,23 +26,28 @@ impl LlamaProcess {
             .to_string_lossy()
             .to_string();
 
-        log::info!("Starting llama-server on port {} with model: {}", port, model_name);
+        log::info!(
+            "Starting llama-server on port {} with model: {}",
+            port,
+            model_name
+        );
 
         let mut cmd = Command::new(binary_path);
         cmd.arg("--model")
-           .arg(model_path)
-           .arg("--host")
-           .arg("127.0.0.1")
-           .arg("--port")
-           .arg(port.to_string())
-           .arg("--ctx-size")
-           .arg(context_size.to_string())
-           .arg("--n-gpu-layers")
-           .arg(gpu_layers.to_string())
-           .arg("--log-disable")
-           .arg("--no-mmap");
+            .arg(model_path)
+            .arg("--host")
+            .arg("127.0.0.1")
+            .arg("--port")
+            .arg(port.to_string())
+            .arg("--ctx-size")
+            .arg(context_size.to_string())
+            .arg("--n-gpu-layers")
+            .arg(gpu_layers.to_string())
+            .arg("--log-disable")
+            .arg("--no-mmap");
 
-        let child = cmd.spawn()
+        let child = cmd
+            .spawn()
             .map_err(|e| format!("Failed to start llama-server: {}", e))?;
 
         log::info!("llama-server started with PID {}", child.id());
@@ -61,7 +71,10 @@ impl LlamaProcess {
 
         loop {
             if start.elapsed().as_secs() > timeout_secs {
-                return Err(format!("llama-server did not start within {} seconds", timeout_secs));
+                return Err(format!(
+                    "llama-server did not start within {} seconds",
+                    timeout_secs
+                ));
             }
 
             if let Ok(resp) = client.get(&url).send().await {
@@ -86,9 +99,15 @@ impl LlamaProcess {
         Err("No available port found in range 18080-18100".to_string())
     }
 
-    pub fn port(&self) -> u16 { self.port }
-    pub fn model_name(&self) -> &str { &self.model_name }
-    pub fn pid(&self) -> u32 { self.child.as_ref().map(|c| c.id()).unwrap_or(0) }
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+    pub fn model_name(&self) -> &str {
+        &self.model_name
+    }
+    pub fn pid(&self) -> u32 {
+        self.child.as_ref().map(|c| c.id()).unwrap_or(0)
+    }
 
     pub fn server_info(&self) -> ServerInfo {
         ServerInfo {

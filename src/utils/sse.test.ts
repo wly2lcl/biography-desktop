@@ -1,5 +1,36 @@
-import { describe, it, expect } from 'vitest';
-import { escapeForSSE, unescapeSSE } from './sse';
+import { describe, it, expect, vi } from 'vitest';
+import { escapeForSSE, parseSSE, unescapeSSE } from './sse';
+
+describe('parseSSE', () => {
+  it('joins multiple data fields and flushes the final EOF event', async () => {
+    const response = new Response(
+      'event: message\r\ndata: {"value":\r\ndata: 1}\r\n\r\ndata: tail'
+    );
+    const events = [];
+    for await (const event of parseSSE(response)) events.push(event);
+    expect(events).toEqual([
+      { event: 'message', data: '{"value":\n1}' },
+      { event: null, data: 'tail' },
+    ]);
+  });
+
+  it('cancels the reader when the consumer stops before EOF', async () => {
+    const cancel = vi.fn();
+    const response = new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: first\n\n'));
+      },
+      cancel,
+    }));
+
+    for await (const event of parseSSE(response)) {
+      expect(event.data).toBe('first');
+      break;
+    }
+
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+});
 
 describe('escapeForSSE', () => {
   it('should escape backslashes', () => {

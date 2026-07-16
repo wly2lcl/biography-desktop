@@ -1,5 +1,5 @@
-use std::path::{Path, PathBuf};
 use std::fs;
+use std::path::{Path, PathBuf};
 
 const LLAMA_CPP_VERSION: &str = "b5556"; // llama.cpp build number
 
@@ -46,7 +46,10 @@ pub fn get_download_url() -> Result<String, String> {
 }
 
 /// Download and extract llama-server binary from GitHub Releases
-pub async fn download_binary(data_dir: &Path, on_progress: impl Fn(f64) + Send + Sync) -> Result<(), String> {
+pub async fn download_binary(
+    data_dir: &Path,
+    on_progress: impl Fn(f64) + Send + Sync,
+) -> Result<(), String> {
     let url = get_download_url()?;
     let bin_dir = data_dir.join("bin");
     fs::create_dir_all(&bin_dir).map_err(|e| format!("Failed to create bin directory: {}", e))?;
@@ -64,8 +67,8 @@ pub async fn download_binary(data_dir: &Path, on_progress: impl Fn(f64) + Send +
     let total_size = response.content_length().unwrap_or(0);
 
     // Stream download to file
-    let mut file = fs::File::create(&temp_zip)
-        .map_err(|e| format!("Failed to create temp file: {}", e))?;
+    let mut file =
+        fs::File::create(&temp_zip).map_err(|e| format!("Failed to create temp file: {}", e))?;
 
     let mut downloaded: u64 = 0;
     let mut stream = response.bytes_stream();
@@ -73,7 +76,8 @@ pub async fn download_binary(data_dir: &Path, on_progress: impl Fn(f64) + Send +
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result.map_err(|e| format!("Download error: {}", e))?;
         use std::io::Write;
-        file.write_all(&chunk).map_err(|e| format!("Write error: {}", e))?;
+        file.write_all(&chunk)
+            .map_err(|e| format!("Write error: {}", e))?;
         downloaded += chunk.len() as u64;
         if total_size > 0 {
             on_progress(downloaded as f64 / total_size as f64);
@@ -90,7 +94,9 @@ pub async fn download_binary(data_dir: &Path, on_progress: impl Fn(f64) + Send +
     let mut found = false;
 
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i).map_err(|e| format!("Zip error: {}", e))?;
+        let mut file = archive
+            .by_index(i)
+            .map_err(|e| format!("Zip error: {}", e))?;
         let entry_path = file.name().to_string();
 
         // Look for llama-server binary in the archive
@@ -108,7 +114,7 @@ pub async fn download_binary(data_dir: &Path, on_progress: impl Fn(f64) + Send +
     if !found {
         // Clean up
         let _ = fs::remove_file(&temp_zip);
-        return Err(format!("llama-server binary not found in release archive"));
+        return Err("llama-server binary not found in release archive".to_string());
     }
 
     // Make executable on Unix
@@ -116,9 +122,12 @@ pub async fn download_binary(data_dir: &Path, on_progress: impl Fn(f64) + Send +
     {
         use std::os::unix::fs::PermissionsExt;
         let path = get_binary_path(data_dir);
-        let mut perms = fs::metadata(&path).map_err(|e| format!("Failed to read permissions: {}", e))?.permissions();
+        let mut perms = fs::metadata(&path)
+            .map_err(|e| format!("Failed to read permissions: {}", e))?
+            .permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(&path, perms).map_err(|e| format!("Failed to set permissions: {}", e))?;
+        fs::set_permissions(&path, perms)
+            .map_err(|e| format!("Failed to set permissions: {}", e))?;
     }
 
     // Clean up temp file
@@ -136,9 +145,7 @@ pub fn verify_binary(data_dir: &Path) -> Result<(), String> {
     }
 
     // Try to run --help to verify it's executable
-    let output = std::process::Command::new(&path)
-        .arg("--help")
-        .output();
+    let output = std::process::Command::new(&path).arg("--help").output();
 
     match output {
         Ok(out) => {

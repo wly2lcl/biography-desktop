@@ -18,9 +18,9 @@ fn validate_prompt_path(state: &AppDb, path: &str) -> Result<PathBuf, String> {
     let requested = prompts_dir.join(path.trim_start_matches('/'));
 
     // Canonicalize to resolve any '..' traversal
-    let canonical = requested.canonicalize().map_err(|_| {
-        format!("Invalid path: {}", path)
-    })?;
+    let canonical = requested
+        .canonicalize()
+        .map_err(|_| format!("Invalid path: {}", path))?;
 
     // Ensure the resolved path is within the prompts directory
     if !canonical.starts_with(&prompts_dir) {
@@ -31,10 +31,7 @@ fn validate_prompt_path(state: &AppDb, path: &str) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-pub async fn read_file(
-    state: State<'_, AppDb>,
-    path: String,
-) -> Result<String, String> {
+pub async fn read_file(state: State<'_, AppDb>, path: String) -> Result<String, String> {
     let full_path = validate_prompt_path(&state, &path)?;
 
     if !full_path.exists() {

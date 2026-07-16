@@ -1,8 +1,18 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useGameStore } from '@/store/gameStore';
-import { PRESET_PROVIDERS } from '@/services/config';
+import {
+  EXPERIMENTAL_PROVIDERS_ENABLED,
+  PRESET_PROVIDERS,
+  providerRequiresCloudConsent,
+} from '@/services/config';
 import type { AppSettings } from '@/types/settings';
 import type { ModelInfo, DownloadedModel, ServerStatus } from '@/types/models';
+import { isTauriRuntime } from '@/services/runtime';
+import { getErrorMessage } from '@/utils/errors';
+import {
+  formatDatabaseRestoreError,
+  restoreSessionBackup,
+} from '@/services/databaseRestore';
 
 type TabId = 'llm' | 'advanced' | 'localModel' | 'data' | 'about';
 
@@ -14,13 +24,22 @@ interface TabDefinition {
 const TABS: TabDefinition[] = [
   { id: 'llm', label: 'LLM' },
   { id: 'advanced', label: '高级' },
-  { id: 'localModel', label: '本地模型' },
+  ...(EXPERIMENTAL_PROVIDERS_ENABLED
+    ? [{ id: 'localModel' as const, label: '本地模型' }]
+    : []),
   { id: 'data', label: '数据' },
   { id: 'about', label: '关于' },
 ];
 
 interface TempSettings extends AppSettings {
   // Additional UI-only state
+}
+
+interface BackupInfo {
+  path: string;
+  filename: string;
+  size: number;
+  modified: string;
 }
 
 /**
@@ -37,32 +56,67 @@ export default function SettingsScreen() {
     startLocalServer, stopLocalServer,
     startDownloadModel, cancelDownloadModel, deleteDownloadedModel,
     ensureBinary,
+    isStreaming, isPersistingSession, isDataMutationInProgress,
   } = useGameStore();
 
   const [activeTab, setActiveTab] = useState<TabId>('llm');
   const [draft, setDraft] = useState<TempSettings>(() => ({ ...settings }));
   const [showApiKey, setShowApiKey] = useState(false);
   const [testResult, setTestResult] = useState<'idle' | 'testing' | 'success' | 'failure'>('idle');
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [dbInfo, setDbInfo] = useState<{ path: string; size: number; sessionCount: number; activeCount: number } | null>(null);
+  const [backups, setBackups] = useState<BackupInfo[]>([]);
 
   // Refs for paste
   const apiKeyRef = useRef<HTMLInputElement>(null);
 
   // ── Refresh DB info ──────────────────────────────
+  const refreshDbInfoStrict = useCallback(async () => {
+    if (!isTauriRuntime()) {
+      setDbInfo(null);
+      return;
+    }
+    const { invoke } = await import('@tauri-apps/api/core');
+    const info = await invoke('get_database_info') as {
+      path: string;
+      size: number;
+      sessionCount: number;
+      activeCount: number;
+    };
+    setDbInfo(info);
+  }, []);
+
   const refreshDbInfo = useCallback(async () => {
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      const info = await invoke('get_database_info') as { path: string; size: number; sessionCount: number; activeCount: number };
-      setDbInfo(info);
+      await refreshDbInfoStrict();
     } catch {
       setDbInfo(null);
     }
+  }, [refreshDbInfoStrict]);
+
+  const refreshBackupsStrict = useCallback(async () => {
+    if (!isTauriRuntime()) {
+      setBackups([]);
+      return;
+    }
+    const { invoke } = await import('@tauri-apps/api/core');
+    setBackups(await invoke('list_backups') as BackupInfo[]);
   }, []);
+
+  const refreshBackups = useCallback(async () => {
+    try {
+      await refreshBackupsStrict();
+    } catch {
+      setBackups([]);
+    }
+  }, [refreshBackupsStrict]);
 
   // Fetch db info on mount
   useEffect(() => {
     refreshDbInfo();
-  }, [refreshDbInfo]);
+    refreshBackups();
+  }, [refreshDbInfo, refreshBackups]);
 
   // Reset draft when settings change externally
   useEffect(() => {
@@ -92,9 +146,7 @@ export default function SettingsScreen() {
   const handleTestConnection = useCallback(async () => {
     setTestResult('testing');
     try {
-      // Temporarily apply draft settings for test
-      useGameStore.getState().updateSettings(draft);
-      const ok = await testLlmConnection();
+      const ok = await testLlmConnection(draft);
       setTestResult(ok ? 'success' : 'failure');
     } catch {
       setTestResult('failure');
@@ -103,8 +155,18 @@ export default function SettingsScreen() {
 
   // ── Save ──────────────────────────────────────────
   const handleSave = useCallback(async () => {
-    await updateSettings(draft);
-    setShowSettings(false);
+    if (providerRequiresCloudConsent(draft.llmProvider)
+      && !draft.cloudPrivacyAcknowledged) return;
+    setIsSaving(true);
+    setSaveError(null);
+    try {
+      await updateSettings(draft);
+      setShowSettings(false);
+    } catch (error) {
+      setSaveError(getErrorMessage(error, '保存设置失败，请重试'));
+    } finally {
+      setIsSaving(false);
+    }
   }, [draft, updateSettings, setShowSettings]);
 
   // ── Paste API key from clipboard ──────────────────
@@ -132,9 +194,11 @@ export default function SettingsScreen() {
 
   // ── Load local model data on mount ────────────────
   useEffect(() => {
-    refreshServerStatus();
-    refreshAvailableModels();
-    refreshDownloadedModels();
+    if (EXPERIMENTAL_PROVIDERS_ENABLED) {
+      refreshServerStatus();
+      refreshAvailableModels();
+      refreshDownloadedModels();
+    }
   }, []);
 
   // ── Generic number updater ─────────────────────────
@@ -196,6 +260,10 @@ export default function SettingsScreen() {
               onUpdate={(key, value) => setDraft((prev) => ({ ...prev, [key]: value }))}
               onUpdateNumber={updateNumber}
               onTestConnection={handleTestConnection}
+              onPrivacyChange={(checked) => setDraft((prev) => ({
+                ...prev,
+                cloudPrivacyAcknowledged: checked,
+              }))}
             />
           )}
           {activeTab === 'advanced' && (
@@ -222,7 +290,14 @@ export default function SettingsScreen() {
           {activeTab === 'data' && (
             <DataTabContent
               dbInfo={dbInfo}
+              backups={backups}
               onRefresh={refreshDbInfo}
+              onRefreshBackups={refreshBackups}
+              onRefreshStrict={refreshDbInfoStrict}
+              onRefreshBackupsStrict={refreshBackupsStrict}
+              dataActionsDisabled={
+                isStreaming || isPersistingSession || isDataMutationInProgress
+              }
             />
           )}
           {activeTab === 'about' && (
@@ -231,7 +306,13 @@ export default function SettingsScreen() {
         </div>
 
         {/* ── Footer ──────────────────────────────── */}
-        <div className="flex justify-end gap-3 px-6 pb-6 pt-2 border-t border-white/10">
+        <div className="flex items-center gap-3 px-6 pb-6 pt-2 border-t border-white/10">
+          {saveError && (
+            <p role="alert" className="flex-1 text-sm text-red-400">
+              {saveError}
+            </p>
+          )}
+          <div className="flex justify-end gap-3 ml-auto">
           <button
             type="button"
             onClick={() => setShowSettings(false)}
@@ -242,10 +323,13 @@ export default function SettingsScreen() {
           <button
             type="button"
             onClick={handleSave}
-            className="btn-primary text-sm"
+            disabled={isSaving || providerRequiresCloudConsent(draft.llmProvider)
+              && !draft.cloudPrivacyAcknowledged}
+            className="btn-primary text-sm disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            保存设置
+            {isSaving ? '保存中...' : '保存设置'}
           </button>
+          </div>
         </div>
       </div>
     </div>
@@ -267,6 +351,7 @@ function LlmTabContent({
   onUpdate,
   onUpdateNumber,
   onTestConnection,
+  onPrivacyChange,
 }: {
   draft: AppSettings;
   showApiKey: boolean;
@@ -278,6 +363,7 @@ function LlmTabContent({
   onUpdate: (key: string, value: string) => void;
   onUpdateNumber: (key: keyof AppSettings, value: string) => void;
   onTestConnection: () => void;
+  onPrivacyChange: (checked: boolean) => void;
 }) {
   const testBtnLabel =
     testResult === 'testing'
@@ -321,7 +407,7 @@ function LlmTabContent({
               <span>{provider.name}</span>
             </label>
           ))}
-          <label
+          {EXPERIMENTAL_PROVIDERS_ENABLED && <label
             className={`cursor-pointer px-3.5 py-2 rounded-lg border text-sm transition-colors ${
               draft.llmProvider === 'custom'
                 ? 'border-primary-400 bg-primary-400/10 text-primary-200'
@@ -337,12 +423,13 @@ function LlmTabContent({
               className="sr-only"
             />
             自定义
-          </label>
+          </label>}
         </div>
       </fieldset>
 
       {/* API Key */}
-      {draft.llmProvider === 'llamacpp' || draft.llmProvider === 'llamacpp_local' ? (
+      {draft.llmProvider === 'ollama' || draft.llmProvider === 'llamacpp'
+        || draft.llmProvider === 'llamacpp_local' ? (
         <div>
           <label className="block text-sm text-gray-300 mb-1.5 font-medium">
             API Key
@@ -407,8 +494,9 @@ function LlmTabContent({
           type="text"
           value={draft.baseUrl}
           onChange={(e) => onUpdate('baseUrl', e.target.value)}
+          disabled={!EXPERIMENTAL_PROVIDERS_ENABLED || draft.llmProvider !== 'custom'}
           placeholder="https://api.deepseek.com"
-          className="input-base"
+          className="input-base disabled:cursor-not-allowed disabled:opacity-60"
         />
       </div>
 
@@ -474,6 +562,21 @@ function LlmTabContent({
           {testBtnLabel}
         </button>
       </div>
+
+      <div className="rounded-lg border border-amber-400/20 bg-amber-400/5 p-3">
+        <label className="flex items-start gap-2 text-sm text-gray-300 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={draft.cloudPrivacyAcknowledged}
+            onChange={(event) => onPrivacyChange(event.target.checked)}
+            className="mt-1"
+          />
+          <span>
+            我了解角色名、世界观、剧情历史和提问会发送给所选云端模型服务商。
+            Tauri 正式版会将 API Key 存入系统钥匙串；Web 模式仅用于开发调试。
+          </span>
+        </label>
+      </div>
     </div>
   );
 }
@@ -531,7 +634,7 @@ function AdvancedTabContent({
               min={param.min}
               max={param.max}
               step={param.step ?? 1}
-              value={draft[param.key]}
+              value={String(draft[param.key])}
               onChange={(e) => onUpdateNumber(param.key, e.target.value)}
               className="input-base"
             />
@@ -551,41 +654,104 @@ function AdvancedTabContent({
 
 function DataTabContent({
   dbInfo,
+  backups,
   onRefresh,
+  onRefreshBackups,
+  onRefreshStrict,
+  onRefreshBackupsStrict,
+  dataActionsDisabled,
 }: {
   dbInfo: { path: string; size: number; sessionCount: number; activeCount: number } | null;
+  backups: BackupInfo[];
   onRefresh: () => Promise<void>;
+  onRefreshBackups: () => Promise<void>;
+  onRefreshStrict: () => Promise<void>;
+  onRefreshBackupsStrict: () => Promise<void>;
+  dataActionsDisabled: boolean;
 }) {
+  const desktopAvailable = isTauriRuntime();
   const handleBackup = useCallback(async () => {
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       const backupPath = await invoke('backup_database') as string;
       alert(`备份成功！\n文件位置: ${backupPath}`);
-      await onRefresh();
+      await Promise.all([onRefresh(), onRefreshBackups()]);
     } catch (err) {
-      alert(`备份失败: ${err instanceof Error ? err.message : '未知错误'}`);
+      alert(`备份失败: ${getErrorMessage(err, '未知错误')}`);
     }
-  }, [onRefresh]);
+  }, [onRefresh, onRefreshBackups]);
 
-  const handleCleanup = useCallback(async () => {
+  const handleRestore = useCallback(async (backup: BackupInfo) => {
+    if (!window.confirm(
+      `确定恢复「${backup.filename}」吗？当前会话将被备份内容替换，现有设置和 API Key 会保留。`
+    )) return;
+    const store = useGameStore.getState();
+    let prepared = false;
+    try {
+      await store.prepareForDataMutation();
+      prepared = true;
+      await restoreSessionBackup(backup.path, {
+        resetCurrentSession: store.newGame,
+        refreshResumeSessions: () => store.checkResume({ throwOnError: true }),
+        refreshDatabaseInfo: onRefreshStrict,
+        refreshBackups: onRefreshBackupsStrict,
+      });
+      alert('数据库恢复成功，当前设置和 API Key 已保留');
+    } catch (err) {
+      alert(formatDatabaseRestoreError(err));
+    } finally {
+      if (prepared) store.finishDataMutation();
+    }
+  }, [onRefreshStrict, onRefreshBackupsStrict]);
+
+  const handleDeleteBackup = useCallback(async (backup: BackupInfo) => {
+    if (!window.confirm(`确定删除备份「${backup.filename}」吗？`)) return;
     try {
       const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('delete_backup', { backupPath: backup.path });
+      await onRefreshBackups();
+    } catch (err) {
+      alert(`删除备份失败: ${getErrorMessage(err, '未知错误')}`);
+    }
+  }, [onRefreshBackups]);
+
+  const handleCleanup = useCallback(async () => {
+    if (!window.confirm('确定永久删除所有已结束会话及其传记吗？')) return;
+    const store = useGameStore.getState();
+    let prepared = false;
+    try {
+      await store.prepareForDataMutation();
+      prepared = true;
+      const { invoke } = await import('@tauri-apps/api/core');
       const count = await invoke('clear_ended_sessions') as number;
+      if (store.session && !store.session.isActive) store.newGame();
+      await store.checkResume();
       alert(`已清理 ${count} 个已结束会话`);
       await onRefresh();
     } catch (err) {
-      alert(`清理失败: ${err instanceof Error ? err.message : '未知错误'}`);
+      alert(`清理失败: ${getErrorMessage(err, '未知错误')}`);
+    } finally {
+      if (prepared) store.finishDataMutation();
     }
   }, [onRefresh]);
 
   const handleCleanupAll = useCallback(async () => {
+    if (!window.confirm('确定永久删除全部会话吗？此操作无法撤销。')) return;
+    const store = useGameStore.getState();
+    let prepared = false;
     try {
+      await store.prepareForDataMutation();
+      prepared = true;
       const { invoke } = await import('@tauri-apps/api/core');
       const count = await invoke('clear_all_sessions') as number;
+      store.newGame();
+      await store.checkResume();
       alert(`已清理全部 ${count} 个会话`);
       await onRefresh();
     } catch (err) {
-      alert(`清理失败: ${err instanceof Error ? err.message : '未知错误'}`);
+      alert(`清理失败: ${getErrorMessage(err, '未知错误')}`);
+    } finally {
+      if (prepared) store.finishDataMutation();
     }
   }, [onRefresh]);
 
@@ -606,21 +772,7 @@ function DataTabContent({
         onRefresh?.();
       }
     } catch (err) {
-      // Fallback: download as blob in web mode
-      try {
-        const { invoke } = await import('@tauri-apps/api/core');
-        const data = await invoke('export_full_data') as string;
-        const blob = new Blob([data], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `biography-export-${Date.now()}.json`;
-        a.click();
-        URL.revokeObjectURL(url);
-        onRefresh?.();
-      } catch {
-        alert(`导出失败: ${err instanceof Error ? err.message : '未知错误'}`);
-      }
+      alert(`导出失败: ${getErrorMessage(err, '未知错误')}`);
     }
   }, [onRefresh]);
 
@@ -636,31 +788,35 @@ function DataTabContent({
       });
       if (filePath) {
         const data = await readTextFile(filePath);
-        const result = await invoke('import_full_data', { data }) as string;
-        alert(result);
-        onRefresh?.();
-      }
-    } catch (err) {
-      // Fallback: file input in web mode
-      try {
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.accept = '.json';
-        input.onchange = async (e) => {
-          const file = (e.target as HTMLInputElement).files?.[0];
-          if (!file) return;
-          const text = await file.text();
-          const { invoke } = await import('@tauri-apps/api/core');
-          const result = await invoke('import_full_data', { data: text }) as string;
+        if (!window.confirm('导入会按 sessionId 新增或覆盖会话。确定继续吗？')) return;
+        const store = useGameStore.getState();
+        let prepared = false;
+        try {
+          await store.prepareForDataMutation();
+          prepared = true;
+          const result = await invoke('import_full_data', { data }) as string;
+          store.newGame();
+          await store.checkResume();
           alert(result);
           onRefresh?.();
-        };
-        input.click();
-      } catch {
-        alert(`导入失败: ${err instanceof Error ? err.message : '未知错误'}`);
+        } finally {
+          if (prepared) store.finishDataMutation();
+        }
       }
+    } catch (err) {
+      alert(`导入失败: ${getErrorMessage(err, '未知错误')}`);
     }
   }, [onRefresh]);
+
+  if (!desktopAvailable) {
+    return (
+      <div className="glass-panel !bg-dark-800/50 p-4">
+        <p className="text-sm text-gray-400">
+          Web 模式仅用于开发调试；数据库备份、恢复和全量导入导出只在 Tauri 桌面版提供。
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-5">
@@ -674,25 +830,64 @@ function DataTabContent({
             <InfoRow label="会话总数" value={String(dbInfo.sessionCount)} />
             <InfoRow label="活跃会话" value={String(dbInfo.activeCount)} />
           </>
-        ) : (
-          <p className="text-gray-500 text-sm">Web 模式下数据库信息不可用</p>
-        )}
+        ) : <p className="text-gray-500 text-sm">暂时无法读取数据库信息</p>}
       </div>
 
       {/* Actions */}
       <div className="space-y-3">
+        {dataActionsDisabled && (
+          <p className="text-xs text-amber-300">
+            正在生成内容、保存会话或执行其他数据操作，请稍候。
+          </p>
+        )}
         <button
           type="button"
           onClick={handleBackup}
-          className="btn-secondary text-sm w-full sm:w-auto"
+          disabled={dataActionsDisabled}
+          className="btn-secondary text-sm w-full sm:w-auto disabled:cursor-not-allowed disabled:opacity-50"
         >
           备份数据库
         </button>
+        {backups.length > 0 && (
+          <div className="space-y-2 pt-1">
+            <h4 className="text-sm font-medium text-gray-300">最近备份</h4>
+            {backups.map((backup) => (
+              <div
+                key={backup.path}
+                className="flex items-center gap-3 rounded-lg border border-white/10 bg-dark-800/40 p-3"
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm text-gray-200">{backup.filename}</p>
+                  <p className="text-xs text-gray-500">
+                    {backup.modified} · {(backup.size / 1024).toFixed(1)} KB
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleRestore(backup)}
+                  disabled={dataActionsDisabled}
+                  className="btn-secondary px-2.5 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  恢复
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDeleteBackup(backup)}
+                  disabled={dataActionsDisabled}
+                  className="btn-danger px-2.5 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  删除
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="flex items-start gap-3">
           <button
             type="button"
             onClick={handleCleanup}
-            className="btn-danger text-sm shrink-0"
+            disabled={dataActionsDisabled}
+            className="btn-danger text-sm shrink-0 disabled:cursor-not-allowed disabled:opacity-50"
           >
             清理已结束会话
           </button>
@@ -704,7 +899,8 @@ function DataTabContent({
           <button
             type="button"
             onClick={handleCleanupAll}
-            className="btn-danger text-sm shrink-0"
+            disabled={dataActionsDisabled}
+            className="btn-danger text-sm shrink-0 disabled:cursor-not-allowed disabled:opacity-50"
           >
             清理全部会话
           </button>
@@ -717,10 +913,20 @@ function DataTabContent({
       {/* Export / Import all data */}
       <div className="space-y-3 pt-3 border-t border-gray-700/50">
         <h4 className="text-sm font-medium text-gray-300">全部数据</h4>
-        <button onClick={handleExportAll} className="btn-secondary text-sm w-full sm:w-auto">
+        <button
+          type="button"
+          onClick={handleExportAll}
+          disabled={dataActionsDisabled}
+          className="btn-secondary text-sm w-full sm:w-auto disabled:cursor-not-allowed disabled:opacity-50"
+        >
           导出全部数据（JSON）
         </button>
-        <button onClick={handleImportAll} className="btn-primary text-sm w-full sm:w-auto">
+        <button
+          type="button"
+          onClick={handleImportAll}
+          disabled={dataActionsDisabled}
+          className="btn-primary text-sm w-full sm:w-auto disabled:cursor-not-allowed disabled:opacity-50"
+        >
           导入全部数据（JSON）
         </button>
       </div>
@@ -762,8 +968,7 @@ function AboutTabContent() {
           做出选择推动故事发展，最终生成一部专属的传记。
         </p>
         <p>
-          使用 DeepSeek、OpenAI 或 Ollama 等大语言模型驱动，
-          支持无限的自由叙事与角色扮演体验。
+          稳定版使用 DeepSeek 或 OpenAI 云端模型驱动；实验提供商和本地模型仅在开发构建中开放。
         </p>
       </div>
 

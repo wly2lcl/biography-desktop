@@ -10,9 +10,9 @@ function mockStreamResponse(chunks: string[], status = 200): Response {
     new ReadableStream({
       start(controller) {
         for (const chunk of chunks) {
-          controller.enqueue(new TextEncoder().encode(`data: ${chunk}\n`));
+          controller.enqueue(new TextEncoder().encode(`data: ${chunk}\n\n`));
         }
-        controller.enqueue(new TextEncoder().encode('data: [DONE]\n'));
+        controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
         controller.close();
       },
     }),
@@ -84,7 +84,7 @@ describe('llm.ts', () => {
       );
     });
 
-    it('omits Authorization header when apiKey is empty (llama.cpp mode)', async () => {
+    it('omits Authorization header when apiKey is empty', async () => {
       globalThis.fetch = vi.fn().mockResolvedValue(
         mockStreamResponse(['{"choices":[{"delta":{"content":"OK"}}]}'])
       );
@@ -166,6 +166,123 @@ describe('llm.ts', () => {
       for await (const token of gen) tokens.push(token);
       expect(tokens).toEqual(['Hi']);
     });
+
+    it('handles CRLF, split JSON chunks, and final data without newline', async () => {
+      const response = new Response(new ReadableStream({
+        start(controller) {
+          const encode = (value: string) => controller.enqueue(new TextEncoder().encode(value));
+          encode('data: {"choices":[{"del');
+          encode('ta":{"content":"A"}}]}\r\n\r\n');
+          encode('data: {"choices":[{"delta":{"content":"B"},"finish_reason":"stop"}]}');
+          controller.close();
+        },
+      }), { status: 200 });
+      globalThis.fetch = vi.fn().mockResolvedValue(response);
+      const { streamChatText } = await import('./llm');
+      await expect(streamChatText(
+        [{ role: 'user', content: 'Hi' }],
+        { apiKey: 'k', baseUrl: 'http://x', model: 'm', temperature: 0, maxTokens: 10, timeout: 5000 }
+      )).resolves.toBe('AB');
+    });
+
+    it('accepts finish_reason immediately and cancels a stream that stays open', async () => {
+      const cancel = vi.fn();
+      const response = new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(
+            'data: {"choices":[{"delta":{"content":"complete"}}]}\n\n'
+            + 'data: {"choices":[{"delta":{"content":"!"},"finish_reason":"stop"}]}\n\n'
+          ));
+        },
+        cancel,
+      }), { status: 200 });
+      globalThis.fetch = vi.fn().mockResolvedValue(response);
+      const { streamChatText } = await import('./llm');
+
+      await expect(streamChatText(
+        [{ role: 'user', content: 'Hi' }],
+        { apiKey: 'k', baseUrl: 'http://x', model: 'm', temperature: 0, maxTokens: 10, timeout: 50 }
+      )).resolves.toBe('complete!');
+      expect(cancel).toHaveBeenCalledOnce();
+    });
+
+    it('does not replace a completed response when stream cancellation fails', async () => {
+      const response = new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(
+            'data: {"choices":[{"delta":{"content":"complete"},"finish_reason":"stop"}]}\n\n'
+          ));
+        },
+        cancel() {
+          throw new Error('cancel failed');
+        },
+      }), { status: 200 });
+      globalThis.fetch = vi.fn().mockResolvedValue(response);
+      const { streamChatText } = await import('./llm');
+
+      await expect(streamChatText(
+        [{ role: 'user', content: 'Hi' }],
+        { apiKey: 'k', baseUrl: 'http://x', model: 'm', temperature: 0, maxTokens: 10, timeout: 50 }
+      )).resolves.toBe('complete');
+    });
+
+    it('rejects a partial response that reaches EOF without a completion marker', async () => {
+      const response = new Response(
+        'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',
+        { status: 200 }
+      );
+      globalThis.fetch = vi.fn().mockResolvedValue(response);
+      const { streamChatText } = await import('./llm');
+      await expect(streamChatText(
+        [{ role: 'user', content: 'Hi' }],
+        { apiKey: 'k', baseUrl: 'http://x', model: 'm', temperature: 0, maxTokens: 10, timeout: 5000 }
+      )).rejects.toMatchObject({ code: 'invalid_response' });
+    });
+
+    it('does not automatically retry a transport failure after partial content', async () => {
+      const fetchMock = vi.fn().mockImplementation(async () => new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(
+              'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
+            ));
+          },
+          pull(controller) {
+            controller.error(new Error('socket reset'));
+          },
+        }),
+        { status: 200 }
+      ));
+      globalThis.fetch = fetchMock;
+      const [{ streamChatText }, { withRetry }] = await Promise.all([
+        import('./llm'),
+        import('./retry'),
+      ]);
+
+      await expect(withRetry(() => streamChatText(
+        [{ role: 'user', content: 'Hi' }],
+        { apiKey: 'k', baseUrl: 'http://x', model: 'm', temperature: 0, maxTokens: 10, timeout: 5000 }
+      ), { maxAttempts: 3 })).rejects.toMatchObject({ code: 'invalid_response' });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects an empty response body', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+      const { streamChatText } = await import('./llm');
+      await expect(streamChatText(
+        [{ role: 'user', content: 'Hi' }],
+        { apiKey: 'k', baseUrl: 'http://x', model: 'm', temperature: 0, maxTokens: 10, timeout: 5000 }
+      )).rejects.toMatchObject({ code: 'invalid_response' });
+    });
+
+    it('rejects malformed SSE JSON', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(mockStreamResponse(['{bad-json}']));
+      const { streamChatText } = await import('./llm');
+      await expect(streamChatText(
+        [{ role: 'user', content: 'Hi' }],
+        { apiKey: 'k', baseUrl: 'http://x', model: 'm', temperature: 0, maxTokens: 10, timeout: 5000 }
+      )).rejects.toMatchObject({ code: 'invalid_response' });
+    });
   });
 
   describe('streamChat - error handling', () => {
@@ -219,6 +336,18 @@ describe('llm.ts', () => {
       await expect(async () => {
         for await (const _ of gen) {}
       }).rejects.toThrow('Internal error');
+    });
+
+    it('maps 429 and Retry-After to structured error data', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(new Response('{}', {
+        status: 429,
+        headers: { 'Retry-After': '2' },
+      }));
+      const { streamChatText } = await import('./llm');
+      await expect(streamChatText(
+        [{ role: 'user', content: 'Hi' }],
+        { apiKey: 'k', baseUrl: 'http://x', model: 'm', temperature: 0, maxTokens: 10, timeout: 5000 }
+      )).rejects.toMatchObject({ code: 'rate_limit', status: 429, retryAfterMs: 2000 });
     });
 
     it('throws on 400 (bad request)', async () => {
@@ -314,9 +443,9 @@ describe('config.ts', () => {
   });
 
   describe('PRESET_PROVIDERS', () => {
-    it('has exactly 5 providers', async () => {
+    it('registers only the two stable providers by default', async () => {
       const { PRESET_PROVIDERS } = await import('./config');
-      expect(PRESET_PROVIDERS).toHaveLength(5);
+      expect(PRESET_PROVIDERS.map((provider) => provider.id)).toEqual(['deepseek', 'openai']);
     });
 
     it('includes deepseek with correct defaults', async () => {
@@ -333,34 +462,12 @@ describe('config.ts', () => {
       expect(oa.model).toBe('gpt-4o-mini');
     });
 
-    it('includes ollama with correct defaults', async () => {
-      const { PRESET_PROVIDERS } = await import('./config');
-      const ol = PRESET_PROVIDERS.find(p => p.id === 'ollama')!;
-      expect(ol.baseUrl).toBe('http://localhost:11434/v1');
-      expect(ol.model).toBe('qwen2.5');
-    });
-
-    it('includes llamacpp with correct defaults (Phase 8)', async () => {
-      const { PRESET_PROVIDERS } = await import('./config');
-      const lc = PRESET_PROVIDERS.find(p => p.id === 'llamacpp')!;
-      expect(lc).toBeDefined();
-      expect(lc.baseUrl).toBe('http://localhost:8080');
-      expect(lc.model).toBe('Qwen3-8B');
-      expect(lc.description).toContain('本地');
-    });
-
-    it('includes llamacpp_local for app-built-in model (Phase 9)', async () => {
-      const { PRESET_PROVIDERS } = await import('./config');
-      const lc = PRESET_PROVIDERS.find(p => p.id === 'llamacpp_local')!;
-      expect(lc).toBeDefined();
-      expect(lc.description).toContain('内置');
-    });
   });
 
   describe('testConnection', () => {
     it('returns true on successful response', async () => {
       globalThis.fetch = vi.fn().mockResolvedValue(
-        new Response('{}', { status: 200 })
+        mockStreamResponse(['{"choices":[{"delta":{"content":"OK"}}]}'])
       );
 
       const { testConnection } = await import('./config');
@@ -377,7 +484,7 @@ describe('config.ts', () => {
     });
 
     it('includes Authorization header when apiKey is provided', async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
+      globalThis.fetch = vi.fn().mockResolvedValue(mockStreamResponse(['{"choices":[{"delta":{"content":"OK"}}]}']));
 
       const { testConnection } = await import('./config');
       await testConnection('https://api.test.com', 'sk-123', 'model');
@@ -393,8 +500,8 @@ describe('config.ts', () => {
       );
     });
 
-    it('omits Authorization header when apiKey is empty (llama.cpp mode)', async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
+    it('omits Authorization header when apiKey is empty', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(mockStreamResponse(['{"choices":[{"delta":{"content":"OK"}}]}']));
 
       const { testConnection } = await import('./config');
       await testConnection('http://localhost:8080', '', 'Qwen3-8B');

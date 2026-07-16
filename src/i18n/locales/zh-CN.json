@@ -52,7 +52,7 @@
   "screens.worldManager.selectAll": "全选",
   "screens.worldManager.batchExport": "批量导出",
   "onboarding.title": "欢迎使用传记生成器",
-  "onboarding.desc": "本应用完全本地运行，数据保存在您的设备上。使用前请先在设置中配置 LLM API Key。",
+  "onboarding.desc": "会话数据保存在您的设备上；生成内容时会向所选云端模型服务商发送必要上下文。使用前请先完成模型配置与隐私确认。",
   "onboarding.detail": "支持 DeepSeek（免费）、OpenAI、Ollama（本地）等提供商。配置后即可开始创作。",
   "errors.network": "网络连接失败，请检查网络设置",
   "errors.auth": "API Key 无效或已过期，请重新配置",

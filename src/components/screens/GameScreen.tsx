@@ -107,6 +107,7 @@ export default function GameScreen() {
           {isInactive ? (
             <button
               onClick={generateBiography}
+              disabled={isStreaming}
               className="btn-primary text-xs sm:text-sm py-1.5 px-3"
             >
               生成传记
@@ -114,6 +115,7 @@ export default function GameScreen() {
           ) : (
             <button
               onClick={() => setShowConfirmEnd(true)}
+              disabled={isStreaming}
               className="btn-danger text-xs sm:text-sm py-1.5 px-3"
             >
               结束旅程

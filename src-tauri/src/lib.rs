@@ -2,6 +2,7 @@
 
 pub mod commands;
 pub mod db;
+#[cfg(feature = "local-model")]
 pub mod model;
 
 use sqlx::SqlitePool;

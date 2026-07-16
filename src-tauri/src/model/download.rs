@@ -67,6 +67,7 @@ pub fn list_available_models() -> Vec<ModelInfo> {
 }
 
 /// Check whether a specific model file already exists on disk.
+#[allow(dead_code)] // Reserved for the experimental model manifest validation flow.
 pub fn is_model_downloaded(data_dir: &Path, model_id: &str) -> bool {
     get_model_path(data_dir, model_id).exists()
 }
@@ -106,7 +107,7 @@ pub async fn list_downloaded_models(
         if let Ok(entries) = std::fs::read_dir(&models_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().map_or(false, |ext| ext == "gguf") {
+                if path.extension().is_some_and(|ext| ext == "gguf") {
                     let id = path
                         .file_stem()
                         .map(|s| s.to_string_lossy().to_string())
@@ -214,9 +215,7 @@ pub async fn download_model(
         .map_err(|e| format!("Failed to finalize model file: {}", e))?;
 
     // Get actual file size
-    let file_size = std::fs::metadata(&model_path)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let file_size = std::fs::metadata(&model_path).map(|m| m.len()).unwrap_or(0);
 
     // Record in database
     sqlx::query(
@@ -231,7 +230,11 @@ pub async fn download_model(
     .await
     .map_err(|e| format!("Failed to record model in database: {}", e))?;
 
-    log::info!("Model '{}' downloaded successfully ({} bytes)", model.name, file_size);
+    log::info!(
+        "Model '{}' downloaded successfully ({} bytes)",
+        model.name,
+        file_size
+    );
     Ok(())
 }
 
@@ -252,8 +255,7 @@ pub async fn delete_model(
         return Err(format!("Model '{}' is not downloaded", model_id));
     }
 
-    std::fs::remove_file(&model_path)
-        .map_err(|e| format!("Failed to delete model file: {}", e))?;
+    std::fs::remove_file(&model_path).map_err(|e| format!("Failed to delete model file: {}", e))?;
 
     sqlx::query("DELETE FROM models WHERE model_id = ?")
         .bind(model_id)

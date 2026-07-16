@@ -3,7 +3,7 @@
 ## 项目概览
 
 Tauri 2 桌面应用（React + TS + Rust + SQLite），LLM 驱动互动传记叙事。
-从 Python Web 版迁移而来，纯本地运行，无后端。
+从 Python Web 版迁移而来，会话数据本地保存；稳定版通过 DeepSeek/OpenAI 云端 API 生成内容，无自建业务后端。
 
 ## 开发原则
 
@@ -24,10 +24,11 @@ npm run build     # tsc && vite build (tauri build 的前置步骤)
 ## 架构要点
 
 ### 双层存储（自动检测）
-- `src/services/storage.ts` 通过 `window.__TAURI__` 检测运行环境
+- `src/services/runtime.ts` 优先通过 Tauri 2 默认的 `window.__TAURI_INTERNALS__` 检测运行环境，并兼容显式启用的 `window.__TAURI__`
 - Tauri 环境 → SQLite (IPC calls to Rust commands)
 - Web 环境 → localStorage (浏览器调试用)
 - Web 模式下 **SQLite 功能不可用**，所有持久化走 localStorage
+- API Key 在 Tauri 环境走系统 keyring；Web localStorage 仅用于开发调试
 
 ### 屏幕路由
 - `src/App.tsx` 通过 Zustand `currentScreen` 切换: `'start' | 'system' | 'game' | 'biography'`
@@ -49,7 +50,7 @@ npm run build     # tsc && vite build (tauri build 的前置步骤)
 - 向后兼容: 无 `endReason` 的旧会话默认 `isComplete = true`
 
 ### Rust 侧
-- `src-tauri/src/main.rs` — 26 个 Tauri commands 注册
+- `src-tauri/src/main.rs` — 稳定版注册 27 个 Tauri commands；`local-model` 实验 feature 额外注册 10 个
 - 数据库: `~/.local/share/biography-desktop/biography.db` (Linux) / `AppData/Roaming` (Win) / `Library/Application Support` (macOS)
 - `sqlx` 使用 `runtime-tokio`，SQLite 通过 `SqlitePool` 管理
 
@@ -68,13 +69,13 @@ npx vitest run src/services/prompts.test.ts  # 运行单个测试文件
 
 - 环境: happy-dom, globals: true
 - 匹配: `src/**/*.test.ts`, `src/**/*.test.tsx`
-- 测试覆盖率: 98 项通过 (81 原有 + 17 Phase 7)
+- 当前门禁: 227 项前端测试、45 项 Rust 独立测试；全局行覆盖率不低于 65%
 
 ## CI/CD
 
-- `.github/workflows/ci.yml` — push/PR 到 master 时触发 Windows/macOS/Linux 构建
+- `.github/workflows/ci.yml` — push/PR 到 master 时先运行 TypeScript、Vitest/覆盖率、Rust fmt/Clippy/tests，再触发 Windows/macOS/Linux 构建
 - `.github/workflows/release.yml` — push tag `v*` 或手动触发正式 release
-- CI 不运行测试（仅构建验证）
+- Release 仅在全部目标成功后发布；签名凭据不足时只能生成 draft/prerelease
 
 ## TS 严格模式注意事项
 

@@ -2,36 +2,23 @@ import { useState, useEffect } from 'react';
 import { useGameStore } from '@/store/gameStore';
 import { formatTimestamp } from '@/utils/format';
 import type { SessionSummary, WorldInfo } from '@/types/models';
+import { providerRequiresApiKey, providerRequiresCloudConsent } from '@/services/config';
 import ConfirmModal from '@/components/common/ConfirmModal';
 
-/**
- * Extended world entry with metadata needed for game start.
- * TODO: Add isBuiltIn / type to WorldInfo in models.ts and the store's loadWorlds
- *       mapping so this local type can be removed.
- */
-interface WorldEntry extends WorldInfo {
-  isBuiltIn: boolean;
-  type: 'single' | 'directory';
-}
-
-/** Derive world type from filename: .md files are single, directories otherwise. */
-function getWorldType(filename: string): 'single' | 'directory' {
-  return filename.endsWith('.md') ? 'single' : 'directory';
-}
-
-/** Determine whether a world is built-in. Currently all worlds loaded by the
- *  store are built-in; user worlds will require a store-level flag. */
-function isBuiltInWorld(_filename: string): boolean {
-  return true;
+export function worldSelectionId(world: WorldInfo): string {
+  const source = world.isBuiltIn ? 'builtin' : 'user';
+  return `${source}:${world.type}:${world.filename}`;
 }
 
 export default function StartScreen() {
   const {
     worlds,
     resumeSessions,
+    resumeWarning,
     isLoading,
     error,
     config,
+    settings,
     setShowWorldManager,
     setShowSettings,
     startBasicGame,
@@ -57,8 +44,10 @@ export default function StartScreen() {
 
   const validateName = (name: string): string | null => {
     if (name.length === 0) return null;
-    if (name.length < 2) return '角色姓名至少需要 2 个字符';
-    if (name.length > 20) return '角色姓名不能超过 20 个字符';
+    const normalized = name.trim();
+    if (normalized.length === 0) return '角色姓名不能为空白';
+    if (normalized.length < 2) return '角色姓名至少需要 2 个字符';
+    if (normalized.length > 20) return '角色姓名不能超过 20 个字符';
     return null;
   };
 
@@ -69,24 +58,20 @@ export default function StartScreen() {
   };
 
   const handleNameBlur = () => {
-    if (playerName.length > 0 && playerName.length < 2) {
-      setNameError('角色姓名至少需要 2 个字符');
-    }
+    setNameError(validateName(playerName));
   };
 
-  // Build world entries with computed metadata
-  const worldEntries: WorldEntry[] = worlds.map((w) => ({
-    ...w,
-    type: getWorldType(w.filename),
-    isBuiltIn: isBuiltInWorld(w.filename),
-  }));
-
-  const selectedEntry = worldEntries.find((w) => w.filename === selectedWorld);
+  const selectedEntry = worlds.find((world) => worldSelectionId(world) === selectedWorld);
+  const providerReady = !!config
+    && (!providerRequiresApiKey(settings.llmProvider) || !!config.apiKey)
+    && (!providerRequiresCloudConsent(settings.llmProvider)
+      || settings.cloudPrivacyAcknowledged);
   const canStart =
-    playerName.length >= 2 &&
+    playerName.trim().length >= 2 &&
     !nameError &&
     !!selectedEntry &&
-    !isLoading;
+    !isLoading &&
+    providerReady;
 
   const handleStart = () => {
     if (!selectedEntry) return;
@@ -148,20 +133,20 @@ export default function StartScreen() {
           <p className="text-gray-400 text-sm leading-relaxed">
             在无限世界中创造属于你的传奇故事
           </p>
-          {!config && (
+          {!providerReady && (
             <button
               type="button"
               onClick={() => setShowSettings(true)}
               className="mt-3 inline-flex items-center gap-1.5 text-xs text-amber-400 hover:text-amber-300 transition-colors"
             >
               <span>⚠️</span>
-              <span>请先在设置中配置 LLM API Key →</span>
+              <span>请先完成云端模型配置与隐私确认 →</span>
             </button>
           )}
         </div>
 
         {/* ── Onboarding hint ─────────────────────── */}
-        {!config && showOnboarding && (
+        {!providerReady && showOnboarding && (
           <div className="glass-panel !bg-blue-900/20 border-blue-500/30 p-4 mb-4">
             <div className="flex items-start gap-3">
               <svg className="w-5 h-5 text-blue-400 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -170,10 +155,10 @@ export default function StartScreen() {
               <div className="flex-1">
                 <h4 className="text-sm font-medium text-blue-300 mb-1">欢迎使用传记生成器</h4>
                 <p className="text-sm text-gray-300 mb-2">
-                  本应用完全本地运行，数据保存在您的设备上。使用前请先在<strong>设置</strong>中配置 LLM API Key。
+                  会话保存在您的设备上；生成内容时，角色名、世界观、剧情和提问会发送给所选云端模型服务商。
                 </p>
                 <p className="text-xs text-gray-400">
-                  支持 DeepSeek（免费）、OpenAI、Ollama（本地）等提供商。配置后即可开始创作。
+                  稳定版支持 DeepSeek 与 OpenAI。请先在<strong>设置</strong>中阅读隐私说明并配置 API Key。
                 </p>
               </div>
               <button
@@ -236,9 +221,9 @@ export default function StartScreen() {
               disabled={isLoading}
             >
               <option value="">— 请选择世界 —</option>
-              {worldEntries.map((w) => (
-                <option key={w.filename} value={w.filename}>
-                  {w.name}
+              {worlds.map((w) => (
+                <option key={worldSelectionId(w)} value={worldSelectionId(w)}>
+                  {w.name}（{w.isBuiltIn ? '内置' : '用户'}）
                 </option>
               ))}
             </select>
@@ -295,6 +280,15 @@ export default function StartScreen() {
             role="alert"
           >
             <p className="text-red-400 text-sm">{error}</p>
+          </div>
+        )}
+
+        {resumeWarning && (
+          <div
+            className="mt-4 p-3 bg-amber-900/20 border border-amber-500/30 rounded-lg animate-slide-up"
+            role="status"
+          >
+            <p className="text-amber-300 text-sm">{resumeWarning}</p>
           </div>
         )}
 

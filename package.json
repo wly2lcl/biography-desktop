@@ -6,10 +6,13 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:experimental": "tsc && vite build --mode experimental",
     "prebuild:icons": "bash scripts/verify-icons.sh",
     "preview": "vite preview",
     "tauri": "tauri",
+    "tauri:build:experimental": "tauri build --features local-model --config src-tauri/tauri.experimental.conf.json",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "build:all": "npm run tauri build && echo '✓ Build complete. Output in src-tauri/target/release/bundle/' && ls src-tauri/target/release/bundle/*/"
   },
   "dependencies": {
@@ -30,6 +33,7 @@
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.0",
+    "@vitest/coverage-v8": "^4.1.8",
     "autoprefixer": "^10.4.19",
     "happy-dom": "^20.9.0",
     "jsdom": "^27.0.1",

@@ -27,8 +27,8 @@ function App() {
   useEffect(() => {
     const init = async () => {
       const store = useGameStore.getState();
+      await store.loadSettings();
       await Promise.allSettled([
-        store.loadSettings(),
         store.loadConfig(),
         store.loadWorlds(),
         store.checkResume(),
@@ -83,10 +83,14 @@ function App() {
           message="确定要结束当前的旅程吗？"
           confirmText="结束旅程"
           cancelText="继续游戏"
-          onConfirm={() => {
+          onConfirm={async () => {
             const store = useGameStore.getState();
-            store.endGame(false); // End journey without generating biography
-            store.setShowConfirmBio(true); // Show biography confirm
+            try {
+              await store.endGame(false); // Persist the ended session before biography can start.
+              store.setShowConfirmBio(true);
+            } catch {
+              // endGame has already published a user-facing persistence error.
+            }
           }}
           onCancel={() => {
             useGameStore.getState().setShowConfirmEnd(false);

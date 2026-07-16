@@ -5,7 +5,8 @@ import type {
   Scenario,
   SystemProposal,
 } from '../types/models';
-import { streamChatText, type LLMConfig } from '../services/llm';
+import { SESSION_SCHEMA_VERSION } from '../types/models';
+import { LLMError, streamChatText, type LLMConfig } from '../services/llm';
 import { parseLLMJSON } from '../services/parser';
 import { prompts } from '../services/prompts';
 import { withRetry } from '../services/retry';
@@ -35,7 +36,6 @@ const DEFAULT_ENGINE_CONFIG: GameEngineConfig = {
 };
 
 export class GameEngine {
-  private autoCount = 0;
   private config: GameEngineConfig;
 
   constructor(config: Partial<GameEngineConfig> = {}) {
@@ -44,6 +44,14 @@ export class GameEngine {
 
   updateConfig(config: Partial<GameEngineConfig>): void {
     this.config = { ...this.config, ...config };
+  }
+
+  private retryAttempts(cap = Number.POSITIVE_INFINITY): number {
+    const retries = Number.isFinite(this.config.llmMaxRetries)
+      ? Math.max(0, Math.floor(this.config.llmMaxRetries))
+      : DEFAULT_ENGINE_CONFIG.llmMaxRetries;
+    const attempts = retries + 1;
+    return Math.min(cap, attempts);
   }
 
   /**
@@ -57,13 +65,21 @@ export class GameEngine {
     llmConfig: LLMConfig,
     isBuiltIn: boolean,
     worldType: 'single' | 'directory',
-    onToken?: (token: string) => void
+    onToken?: (token: string) => void,
+    signal?: AbortSignal
   ): Promise<GameSession> {
-    const worldContext = await getWorldContext(worldName, isBuiltIn, worldType);
+    const worldRef = {
+      name: worldName,
+      source: isBuiltIn ? 'builtin' as const : 'user' as const,
+      type: worldType,
+    };
+    const worldContext = await getWorldContext(worldRef);
 
     const session: GameSession = {
+      schemaVersion: SESSION_SCHEMA_VERSION,
       sessionId: generateId(),
       world: worldName,
+      worldRef,
       gameMode,
       system: systemContext || undefined,
       player: {
@@ -92,17 +108,27 @@ export class GameEngine {
       () => streamChatText(
         [{ role: 'user', content: introPrompt }],
         llmConfig,
-        onToken
+        onToken,
+        signal
       ),
-      { maxAttempts: this.config.llmMaxRetries }
+      { maxAttempts: this.retryAttempts(), signal }
     );
 
-    const data = parseLLMJSON(fullText) as {
-      prologue: string;
-      title: string;
-      description: string;
-      choices: Array<{ id: string; text: string; description: string }>;
-    };
+    let data: ReturnType<GameEngine['validateScenarioData']>;
+    try {
+      data = this.validateScenarioData(parseLLMJSON(fullText), true);
+    } catch (error) {
+      console.warn('LLM 序章响应无效，使用安全降级序章', error);
+      data = {
+        title: '序章',
+        prologue: `${playerName}踏入了这个世界。`,
+        description: '前路尚未展开，你需要决定迈出的第一步。',
+        choices: [
+          { id: 'a', text: '观察四周', description: '先了解身处的环境' },
+          { id: 'b', text: '向前探索', description: '主动寻找故事的线索' },
+        ],
+      };
+    }
 
     const prologueScenario: Scenario = {
       id: generateId(),
@@ -130,9 +156,14 @@ export class GameEngine {
     isBuiltIn: boolean,
     worldType: 'single' | 'directory',
     llmConfig: LLMConfig,
-    onToken?: (token: string) => void
+    onToken?: (token: string) => void,
+    signal?: AbortSignal
   ): Promise<SystemProposal[]> {
-    const worldContext = await getWorldContext(worldName, isBuiltIn, worldType);
+    const worldContext = await getWorldContext({
+      name: worldName,
+      source: isBuiltIn ? 'builtin' : 'user',
+      type: worldType,
+    });
 
     const sysPrompt = prompts.format(prompts.systemGenerationPrompt(), {
       world_context: worldContext,
@@ -143,13 +174,27 @@ export class GameEngine {
       () => streamChatText(
         [{ role: 'user', content: sysPrompt }],
         llmConfig,
-        onToken
+        onToken,
+        signal
       ),
-      { maxAttempts: this.config.llmMaxRetries }
+      { maxAttempts: this.retryAttempts(), signal }
     );
 
-    const proposals = parseLLMJSON(fullText) as SystemProposal[];
-    return proposals;
+    const proposals = parseLLMJSON(fullText);
+    if (!Array.isArray(proposals) || proposals.length === 0) {
+      throw new Error('系统方案响应不是非空数组');
+    }
+    return proposals.map((value) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error('系统方案格式无效');
+      }
+      const proposal = value as Record<string, unknown>;
+      if (typeof proposal.id !== 'string' || typeof proposal.title !== 'string'
+        || typeof proposal.description !== 'string' || typeof proposal.abilities !== 'string') {
+        throw new Error('系统方案缺少必要字段');
+      }
+      return proposal as unknown as SystemProposal;
+    });
   }
 
   /**
@@ -159,15 +204,20 @@ export class GameEngine {
     session: GameSession,
     choiceId: string,
     llmConfig: LLMConfig,
-    onToken?: (token: string) => void
+    onToken?: (token: string) => void,
+    signal?: AbortSignal
   ): Promise<{ session: GameSession; scenario?: Scenario }> {
     const current = session.scenarios[session.scenarios.length - 1];
+    if (!current) throw new Error('当前会话没有可用场景');
+    if (choiceId !== 'end_journey' && !current.choices.some((choice) => choice.id === choiceId)) {
+      throw new Error('选择已失效，请重新加载当前场景');
+    }
 
     this.recordChoice(session, current, choiceId);
 
     if (choiceId === 'end') {
       session.isActive = false;
-      session.endReason = 'player_ended';
+      session.endReason ??= 'story_ending';
       return { session };
     }
 
@@ -177,8 +227,8 @@ export class GameEngine {
       return { session };
     }
 
-    const nextData = await this.resolveNextScenario(session, current, llmConfig, onToken);
-    this.applyNextScenario(session, nextData);
+    const nextData = await this.resolveNextScenario(session, current, llmConfig, onToken, signal);
+    await this.applyNextScenario(session, nextData, llmConfig, onToken, signal);
 
     return { session, scenario: session.scenarios[session.scenarios.length - 1] };
   }
@@ -188,16 +238,26 @@ export class GameEngine {
    */
   async generateBiography(
     session: GameSession,
-    isBuiltIn: boolean,
-    worldType: 'single' | 'directory',
+    _isBuiltIn: boolean,
+    _worldType: 'single' | 'directory',
     llmConfig: LLMConfig,
-    onToken?: (token: string) => void
+    onToken?: (token: string) => void,
+    signal?: AbortSignal
   ): Promise<string> {
-    const worldContext = await getWorldContext(session.world, isBuiltIn, worldType);
-    const historyText = prompts.formatHistory(session.player.history);
+    const worldContext = await getWorldContext(session.worldRef);
+    const isComplete = session.endReason === 'story_ending'
+      || session.endReason === 'max_choices'
+      || session.endReason === 'max_history'
+      || !session.endReason;
+    const worldThemes = prompts.extractWorldThemes(worldContext);
+    const historyText = prompts.formatHistoryForBiography(
+      session.player.history,
+      session.player.summary,
+      isComplete
+    );
 
-    const bioPrompt = prompts.format(prompts.biographyPrompt(), {
-      world_context: worldContext,
+    const bioPrompt = prompts.format(prompts.biographyPrompt(isComplete), {
+      world_context: worldThemes,
       system_context: this.loadSystemContext(session),
       player_name: session.player.name,
       player_history: historyText,
@@ -207,9 +267,10 @@ export class GameEngine {
       () => streamChatText(
         [{ role: 'user', content: bioPrompt }],
         llmConfig,
-        onToken
+        onToken,
+        signal
       ),
-      { maxAttempts: this.config.llmMaxRetries }
+      { maxAttempts: this.retryAttempts(), signal }
     );
 
     session.biography = biography;
@@ -223,12 +284,11 @@ export class GameEngine {
   async answerQuery(
     session: GameSession,
     question: string,
-    isBuiltIn: boolean,
-    worldType: 'single' | 'directory',
     llmConfig: LLMConfig,
-    onToken?: (token: string) => void
+    onToken?: (token: string) => void,
+    signal?: AbortSignal
   ): Promise<string> {
-    const worldContext = await getWorldContext(session.world, isBuiltIn, worldType);
+    const worldContext = await getWorldContext(session.worldRef);
     const historyText = prompts.formatHistory(session.player.history, session.player.summary);
     const qaHistoryContext = prompts.formatQaHistory(session.player.qaHistory);
 
@@ -250,9 +310,10 @@ export class GameEngine {
       () => streamChatText(
         [{ role: 'user', content: qaPrompt }],
         llmConfig,
-        onToken
+        onToken,
+        signal
       ),
-      { maxAttempts: this.config.llmMaxRetries }
+      { maxAttempts: this.retryAttempts(), signal }
     );
   }
 
@@ -279,9 +340,13 @@ export class GameEngine {
     session: GameSession,
     current: Scenario,
     llmConfig: LLMConfig,
-    onToken?: (token: string) => void
+    onToken?: (token: string) => void,
+    signal?: AbortSignal
   ): Promise<unknown> {
-    if (session.player.history.length >= this.config.maxChoices) {
+    const playerChoiceCount = session.player.history.filter(
+      (entry) => entry.choiceId !== '__auto_continue__'
+    ).length;
+    if (playerChoiceCount >= this.config.maxChoices) {
       session.isActive = false;
       session.endReason = 'max_choices';
       return this.endingScenario('legend');
@@ -293,11 +358,7 @@ export class GameEngine {
       return this.endingScenario('legend');
     }
 
-    const worldContext = await getWorldContext(
-      session.world,
-      true,
-      'single'
-    );
+    const worldContext = await getWorldContext(session.worldRef);
 
     const scenarioPromptText = prompts.format(prompts.scenarioPrompt(), {
       world_context: worldContext,
@@ -312,149 +373,212 @@ export class GameEngine {
       () => streamChatText(
         [{ role: 'user', content: scenarioPromptText }],
         llmConfig,
-        onToken
+        onToken,
+        signal
       ),
-      { maxAttempts: this.config.llmMaxRetries }
+      { maxAttempts: this.retryAttempts(), signal }
     );
 
     try {
-      return parseLLMJSON(fullText);
-    } catch {
+      return this.validateScenarioData(parseLLMJSON(fullText));
+    } catch (error) {
+      console.warn('LLM 场景响应无效，使用安全降级场景', error);
       return this.fallbackScenario(current);
     }
   }
 
-  private applyNextScenario(session: GameSession, data: unknown, llmConfig?: LLMConfig): void {
-    const typed = data as Record<string, unknown>;
+  private async applyNextScenario(
+    session: GameSession,
+    data: unknown,
+    llmConfig: LLMConfig,
+    onToken?: (token: string) => void,
+    signal?: AbortSignal
+  ): Promise<void> {
+    let nextData = data;
+    let autoCount = 0;
 
-    const nextScenario: Scenario = {
-      id: generateId(),
-      title: (typed.title as string) || '新的篇章',
-      description: (typed.description as string) || '',
-      choices: ((typed.choices as unknown[]) || []).map(
-        (c: unknown) => {
-          const choice = c as Record<string, string>;
-          return {
-            id: choice.id,
-            text: choice.text,
-            description: choice.description,
-          };
+    while (true) {
+      const typed = nextData as Record<string, unknown>;
+      const nextScenario: Scenario = {
+        id: generateId(),
+        title: (typed.title as string) || '新的篇章',
+        description: (typed.description as string) || '',
+        choices: ((typed.choices as unknown[]) || []).map(
+          (choiceValue: unknown) => {
+            const choice = choiceValue as Record<string, string>;
+            return {
+              id: choice.id,
+              text: choice.text,
+              description: choice.description,
+            };
+          }
+        ),
+      };
+
+      if (typed.ending) {
+        const ending = typed.ending as { type: string; description: string };
+        if (ending.type) {
+          session.isActive = false;
+          session.endReason ??= 'story_ending';
+          this.ensureEndChoice(nextScenario, ending);
         }
-      ),
-    };
-
-    if (typed.ending) {
-      const ending = typed.ending as { type: string; description: string };
-      if (ending.type) {
-        session.isActive = false;
-        session.endReason = 'story_ending';
-        this.ensureEndChoice(nextScenario, ending);
       }
-    }
 
-    const choices = nextScenario.choices;
-    if (!choices.length && !typed.ending) {
-      this.autoCount++;
-      if (this.autoCount >= this.config.maxAutoContinue) {
-        nextScenario.choices = [
-          { id: 'a', text: '继续前行', description: '沿着命运指引的方向前进' },
-          { id: 'b', text: '另寻他路', description: '选择一条不同的道路' },
-        ];
-      } else {
-        session.player.history.push({
-          scenario: nextScenario.title,
-          scenarioDescription: nextScenario.description,
-          choice: '(故事继续)',
-          choiceId: '__auto_continue__',
-        });
-        session.scenarios = [nextScenario];
-        session.player.currentScenario = nextScenario.id;
-        this.maybeSummarize(session, llmConfig);
-        return;
+      if (nextScenario.choices.length === 0 && !typed.ending) {
+        autoCount++;
+        if (autoCount >= this.config.maxAutoContinue) {
+          nextScenario.choices = [
+            { id: 'a', text: '继续前行', description: '沿着命运指引的方向前进' },
+            { id: 'b', text: '另寻他路', description: '选择一条不同的道路' },
+          ];
+        } else {
+          session.player.history.push({
+            scenario: nextScenario.title,
+            scenarioDescription: nextScenario.description,
+            choice: '(故事继续)',
+            choiceId: '__auto_continue__',
+          });
+          session.scenarios = [nextScenario];
+          session.player.currentScenario = nextScenario.id;
+          nextData = await this.resolveNextScenario(
+            session,
+            nextScenario,
+            llmConfig,
+            onToken,
+            signal
+          );
+          continue;
+        }
       }
+
+      session.scenarios = [nextScenario];
+      session.player.currentScenario = nextScenario.id;
+      await this.maybeSummarize(session, llmConfig, signal);
+      return;
     }
-
-    this.autoCount = 0;
-    session.scenarios = [nextScenario];
-    session.player.currentScenario = nextScenario.id;
-
-    this.maybeSummarize(session, llmConfig);
   }
 
   private summarizing = false;
 
-  private async maybeSummarize(session: GameSession, llmConfig?: LLMConfig): Promise<void> {
+  private async maybeSummarize(
+    session: GameSession,
+    llmConfig: LLMConfig,
+    signal?: AbortSignal
+  ): Promise<void> {
     if (this.summarizing) return;
     this.summarizing = true;
 
     try {
       const historyLen = session.player.history.length;
 
-      if (historyLen >= this.config.summaryThreshold) {
-        try {
-          await this.generateSummary(session);
-        } catch {
-          // Continue without summary
-        }
-      } else if (historyLen > this.config.maxHistoryHardCap) {
-        const keepLatest = session.player.history.slice(-this.config.summaryKeepLatest);
-        const truncated = session.player.history.slice(0, -this.config.summaryKeepLatest);
-
-        try {
-          const eventsText = prompts.formatHistory(truncated);
-          const summaryConfig: LLMConfig = llmConfig
-            ? { ...llmConfig, temperature: 0, maxTokens: 1024 }
-            : { apiKey: '', baseUrl: '', model: '', temperature: 0, maxTokens: 1024, timeout: 30000 };
-          if (llmConfig?.apiKey) {
-            const newSummary = await streamChatText(
-              [
-                {
-                  role: 'user',
-                  content: prompts.format(prompts.summarizationPrompt(), {
-                    existing_summary: session.player.summary,
-                    new_events: eventsText,
-                  }),
-                },
-              ],
-              summaryConfig,
-            );
-            session.player.summary = newSummary;
-          } else {
-            // No API key available, use fallback
-            session.player.summary +=
-              '\n' +
-              truncated
-                .slice(-5)
-                .map((h) => `${h.scenario} → ${h.choice}`)
-                .join('；');
-          }
-        } catch {
-          session.player.summary +=
-            '\n' +
-            truncated
-              .slice(-5)
-              .map((h) => `${h.scenario} → ${h.choice}`)
-              .join('；');
-        }
-
-        session.player.history = keepLatest;
+      if (historyLen > this.config.maxHistoryHardCap) {
+        await this.generateSummary(session, llmConfig, signal);
+      } else if (historyLen >= this.config.summaryThreshold) {
+        await this.generateSummary(session, llmConfig, signal);
       }
     } finally {
       this.summarizing = false;
     }
   }
 
-  private async generateSummary(session: GameSession): Promise<void> {
+  private async generateSummary(
+    session: GameSession,
+    llmConfig: LLMConfig,
+    signal?: AbortSignal
+  ): Promise<void> {
     const keepCount = this.config.summaryKeepLatest;
     if (session.player.history.length <= keepCount) return;
 
     const toSummarize = session.player.history.slice(0, -keepCount);
 
-    session.player.summary +=
-      '\n' +
-      toSummarize.map((h) => `${h.scenario} → ${h.choice}`).join('；');
+    const deterministicFallback = (): string => [
+      session.player.summary,
+      toSummarize
+        .map((entry) => `${entry.scenario} → ${entry.choice}`)
+        .join('；'),
+    ].filter(Boolean).join('\n');
+
+    try {
+      const summary = await withRetry(
+        () => streamChatText(
+          [{
+            role: 'user',
+            content: prompts.format(prompts.summarizationPrompt(), {
+              existing_summary: session.player.summary,
+              new_events: prompts.formatHistory(toSummarize),
+            }),
+          }],
+          { ...llmConfig, temperature: 0, maxTokens: 1024 },
+          undefined,
+          signal
+        ),
+        { maxAttempts: this.retryAttempts(2), signal }
+      );
+      session.player.summary = summary.trim() || deterministicFallback();
+    } catch (error) {
+      if (error instanceof LLMError && error.code === 'cancelled') throw error;
+      session.player.summary = deterministicFallback();
+    }
 
     session.player.history = session.player.history.slice(-keepCount);
+  }
+
+  private validateScenarioData(data: unknown, introduction = false): Record<string, unknown> & {
+    title: string;
+    description: string;
+    prologue: string;
+    choices: Array<{ id: string; text: string; description?: string }>;
+  } {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      throw new Error('场景响应不是对象');
+    }
+    const record = data as Record<string, unknown>;
+    const title = typeof record.title === 'string' ? record.title.trim() : '';
+    const description = typeof record.description === 'string' ? record.description : '';
+    const prologue = typeof record.prologue === 'string' ? record.prologue : '';
+    if (!title || (!description && !(introduction && prologue))) {
+      throw new Error('场景缺少标题或正文');
+    }
+    if (!Array.isArray(record.choices)) throw new Error('场景选项不是数组');
+    const choiceIds = new Set<string>();
+    const choices = record.choices.map((value) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error('选项格式无效');
+      }
+      const choice = value as Record<string, unknown>;
+      if (typeof choice.id !== 'string' || !choice.id.trim()
+        || typeof choice.text !== 'string' || !choice.text.trim()) {
+        throw new Error('选项缺少 id 或文本');
+      }
+      const id = choice.id.trim();
+      if (choiceIds.has(id)) throw new Error('场景选项 id 重复');
+      choiceIds.add(id);
+      return {
+        id,
+        text: choice.text.trim(),
+        description: typeof choice.description === 'string' ? choice.description : undefined,
+      };
+    });
+    let hasEnding = false;
+    if (record.ending !== undefined && record.ending !== null) {
+      if (typeof record.ending !== 'object' || Array.isArray(record.ending)) {
+        throw new Error('结束字段格式无效');
+      }
+      const ending = record.ending as Record<string, unknown>;
+      if ((ending.type !== 'death' && ending.type !== 'peace' && ending.type !== 'legend')
+        || typeof ending.description !== 'string') {
+        throw new Error('结束字段缺少类型或描述');
+      }
+      hasEnding = true;
+    }
+    const autoContinue = record.auto_continue === true || record.autoContinue === true;
+    if (choices.length === 0) {
+      if (introduction) throw new Error('序章必须包含可用选项');
+      if (!hasEnding && !autoContinue) throw new Error('空选项场景必须声明自动续接');
+    } else if (autoContinue) {
+      throw new Error('含选项场景不能声明自动续接');
+    }
+    return { ...record, title, description, prologue, choices };
   }
 
   private ensureEndChoice(scenario: Scenario, ending: { type: string; description: string }): void {

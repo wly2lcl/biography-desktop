@@ -5,238 +5,149 @@ permissions:
 
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version number (e.g., 0.1.0)'
-        required: false
-        default: '0.1.0'
+        description: Version number (for example 0.2.0)
+        required: true
+        default: 0.1.0
+      stable:
+        description: Request a signed stable release
+        type: boolean
+        default: false
 
 env:
   CARGO_INCREMENTAL: 0
-  RUST_BACKTRACE: 1
+  VITE_ENABLE_EXPERIMENTAL_PROVIDERS: 'false'
 
 jobs:
-  prepare-release:
+  metadata:
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
     outputs:
-      tag: ${{ steps.create_tag.outputs.tag }}
+      tag: ${{ steps.release.outputs.tag }}
+      signed: ${{ steps.release.outputs.signed }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Create and push tag
-        id: create_tag
-        run: |
-          VERSION="${{ github.event.inputs.version || '0.1.0' }}"
-          TAG="v${VERSION}"
-          if git tag | grep -q "^${TAG}$"; then
-            echo "Tag ${TAG} already exists, skipping creation"
-          else
-            git tag ${TAG}
-            git push origin ${TAG}
-            echo "Created and pushed tag ${TAG}"
-          fi
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-
-  build-windows:
-    needs: [prepare-release]
-    if: always() && (needs.prepare-release.result == 'success' || github.event_name == 'push')
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: i686-pc-windows-msvc
-      - name: Install frontend dependencies
-        run: npm ci
-      - name: Build x64
-        run: npx tauri build
+      - id: release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Rename x64 artifacts
-        run: |
-          dir src-tauri/target/release/bundle/nsis/*.exe | rename-item -newname { $_.name -replace '(\d+\.\d+\.\d+)_x64', '${1}_windows_x64' }
-      - name: Build x86
-        run: npx tauri build --target i686-pc-windows-msvc
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Rename x86 artifacts
-        run: |
-          dir src-tauri/target/i686-pc-windows-msvc/release/bundle/nsis/*.exe | rename-item -newname { $_.name -replace '(\d+\.\d+\.\d+)_x86', '${1}_windows_x86' }
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-build
-          path: |
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/i686-pc-windows-msvc/release/bundle/nsis/*.exe
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          GITHUB_SHA: ${{ github.sha }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_STABLE: ${{ inputs.stable }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_CERTIFICATE_THUMBPRINT: ${{ secrets.WINDOWS_CERTIFICATE_THUMBPRINT }}
+          WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
+        run: bash scripts/release-metadata.sh
 
-  build-macos:
-    needs: [prepare-release]
-    if: always() && (needs.prepare-release.result == 'success' || github.event_name == 'push')
-    runs-on: macos-latest
+  quality:
+    needs: metadata
+    uses: ./.github/workflows/ci.yml
+    with:
+      skip_desktop_build: true
+
+  build:
+    needs: [metadata, quality]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            artifact: windows-x64
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            artifact: macos-intel
+          - os: macos-15
+            target: aarch64-apple-darwin
+            artifact: macos-apple-silicon
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            artifact: linux-x64
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      - name: Install frontend dependencies
-        run: npm ci
-      - name: Build
-        run: npx tauri build
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Rename artifacts
-        run: |
-          for f in src-tauri/target/release/bundle/dmg/*.dmg; do
-            mv "$f" "$(echo "$f" | sed 's/\([0-9]\.[0-9]\.[0-9]\)_/\1_macos_/')"
-          done
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          name: macos-build
-          path: src-tauri/target/release/bundle/dmg/*.dmg
-
-  build-linux:
-    needs: [prepare-release]
-    if: always() && (needs.prepare-release.result == 'success' || github.event_name == 'push')
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      - name: Install system dependencies
+          targets: ${{ matrix.target }}
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            build-essential \
-            curl \
-            wget \
-            file \
-            libxdo-dev \
-            libssl-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            rpm
-      - name: Install frontend dependencies
-        run: npm ci
-      - name: Build
-        run: npx tauri build
+          sudo apt-get install -y build-essential curl wget file libxdo-dev libssl-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev rpm
+      - name: Import Apple signing certificate
+        if: runner.os == 'macOS' && needs.metadata.outputs.signed == 'true'
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      - name: Import Windows signing certificate
+        if: runner.os == 'Windows' && needs.metadata.outputs.signed == 'true'
+        shell: pwsh
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Rename artifacts
+          CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
-          for f in src-tauri/target/release/bundle/deb/*.deb; do
-            mv "$f" "$(echo "$f" | sed 's/\([0-9]\.[0-9]\.[0-9]\)_/\1_linux_/')"
-          done
-          for f in src-tauri/target/release/bundle/rpm/*.rpm; do
-            mv "$f" "$(echo "$f" | sed 's/\([0-9]\.[0-9]\.[0-9]\)-/\1-linux-/')"
-          done
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-build
-          path: |
-            src-tauri/target/release/bundle/deb/*.deb
-            src-tauri/target/release/bundle/rpm/*.rpm
-
-  build-linux-arm64:
-    needs: [prepare-release]
-    if: always() && (needs.prepare-release.result == 'success' || github.event_name == 'push')
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            build-essential \
-            curl \
-            wget \
-            file \
-            libxdo-dev \
-            libssl-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            rpm
-      - name: Install frontend dependencies
-        run: npm ci
-      - name: Build
-        run: npx tauri build
+          [IO.File]::WriteAllBytes('certificate.pfx', [Convert]::FromBase64String($env:CERTIFICATE))
+          Import-PfxCertificate -FilePath certificate.pfx -CertStoreLocation Cert:\CurrentUser\My -Password (ConvertTo-SecureString $env:CERTIFICATE_PASSWORD -AsPlainText -Force)
+      - run: npm ci
+      - name: Build signed Windows package
+        if: runner.os == 'Windows' && needs.metadata.outputs.signed == 'true'
+        shell: pwsh
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Rename artifacts
+          CERTIFICATE_THUMBPRINT: ${{ secrets.WINDOWS_CERTIFICATE_THUMBPRINT }}
+          TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
         run: |
-          for f in src-tauri/target/release/bundle/deb/*.deb; do
-            mv "$f" "$(echo "$f" | sed 's/_arm64/_linux_arm64/')"
-          done
-          for f in src-tauri/target/release/bundle/rpm/*.rpm; do
-            mv "$f" "$(echo "$f" | sed 's/\([0-9]\.[0-9]\.[0-9]\)-/\1-linux-arm64-/')"
-          done
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+          $config = @{ bundle = @{ windows = @{ certificateThumbprint = $env:CERTIFICATE_THUMBPRINT; digestAlgorithm = 'sha256'; timestampUrl = $env:TIMESTAMP_URL } } } | ConvertTo-Json -Depth 4 -Compress
+          npm exec tauri -- build --target ${{ matrix.target }} --config $config
+      - name: Build macOS, Linux, or unsigned package
+        if: runner.os != 'Windows' || needs.metadata.outputs.signed != 'true'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ needs.metadata.outputs.signed == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ needs.metadata.outputs.signed == 'true' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ needs.metadata.outputs.signed == 'true' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ needs.metadata.outputs.signed == 'true' && secrets.APPLE_TEAM_ID || '' }}
+        run: npm exec tauri -- build --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
         with:
-          name: linux-arm64-build
+          name: ${{ matrix.artifact }}
           path: |
-            src-tauri/target/release/bundle/deb/*.deb
-            src-tauri/target/release/bundle/rpm/*.rpm
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.deb
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.rpm
+          if-no-files-found: error
 
   release:
-    needs: [prepare-release, build-windows, build-macos, build-linux, build-linux-arm64]
+    needs: [metadata, build]
     runs-on: ubuntu-latest
-    if: always()
     steps:
       - uses: actions/download-artifact@v4
-      - name: Determine tag name
-        id: tag
-        run: |
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-          else
-            echo "name=v${{ github.event.inputs.version || '0.1.0' }}" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        if: ${{ needs.build-windows.result == 'success' || needs.build-macos.result == 'success' || needs.build-linux.result == 'success' || needs.build-linux-arm64.result == 'success' }}
         with:
-          tag_name: ${{ steps.tag.outputs.name }}
-          name: Release ${{ steps.tag.outputs.name }}
-          draft: false
-          prerelease: false
-          files: |
-            windows-build/**/*.exe
-            macos-build/**/*.dmg
-            linux-build/**/*.deb
-            linux-build/**/*.rpm
-            linux-arm64-build/**/*.deb
-            linux-arm64-build/**/*.rpm
+          path: artifacts
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.metadata.outputs.tag }}
+          name: Release ${{ needs.metadata.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          draft: ${{ needs.metadata.outputs.signed != 'true' }}
+          prerelease: ${{ needs.metadata.outputs.signed != 'true' }}
+          files: artifacts/**/*
           generate_release_notes: true

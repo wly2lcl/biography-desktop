@@ -50,6 +50,7 @@ pub struct DownloadedModel {
 }
 
 /// Real-time progress for an active model download.
+#[allow(dead_code)] // Reserved for the experimental download status command.
 #[derive(Serialize, Clone)]
 pub struct DownloadProgress {
     pub model_id: String,

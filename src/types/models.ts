@@ -39,9 +39,21 @@ export interface PlayerState {
 /** Reason why a journey ended */
 export type EndReason = 'player_ended' | 'story_ending' | 'max_choices' | 'max_history';
 
+export const SESSION_SCHEMA_VERSION = 2 as const;
+export type SessionSchemaVersion = typeof SESSION_SCHEMA_VERSION;
+
+export interface WorldRef {
+  name: string;
+  source: 'builtin' | 'user';
+  type: 'single' | 'directory';
+}
+
 export interface GameSession {
+  schemaVersion: SessionSchemaVersion;
   sessionId: string;
+  /** Legacy display/storage key. worldRef is the source of truth. */
   world: string;
+  worldRef: WorldRef;
   gameMode: 'basic' | 'system';
   system?: string;
   player: PlayerState;
@@ -63,6 +75,8 @@ export interface WorldInfo {
   name: string;
   filename: string;
   description: string;
+  isBuiltIn: boolean;
+  type: 'single' | 'directory';
   preview?: string;
 }
 
@@ -84,6 +98,7 @@ export interface ChoiceResponse {
 }
 
 export interface AppConfig {
+  provider?: 'deepseek' | 'openai';
   apiKey: string;
   baseUrl: string;
   model: string;

@@ -7,11 +7,9 @@ use sqlx::SqlitePool;
 pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // Migration 1: Add biography column if not exists
     // SQLite doesn't support IF NOT EXISTS for columns easily, so we check manually
-    let columns: Vec<(String,)> = sqlx::query_as(
-        "SELECT name FROM pragma_table_info('sessions')"
-    )
-    .fetch_all(pool)
-    .await?;
+    let columns: Vec<(String,)> = sqlx::query_as("SELECT name FROM pragma_table_info('sessions')")
+        .fetch_all(pool)
+        .await?;
 
     let has_biography = columns.iter().any(|(name,)| name == "biography");
     if !has_biography {

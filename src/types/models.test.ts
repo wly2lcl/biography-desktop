@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { EndReason, GameSession } from '@/types/models';
+import { SESSION_SCHEMA_VERSION, type EndReason, type GameSession } from '@/types/models';
 
 describe('EndReason type', () => {
   it('should accept all valid end reasons', () => {
@@ -10,8 +10,10 @@ describe('EndReason type', () => {
 
 describe('GameSession.endReason', () => {
   const createSession = (): GameSession => ({
+    schemaVersion: SESSION_SCHEMA_VERSION,
     sessionId: 'test-1',
     world: 'test_world',
+    worldRef: { name: 'test_world', source: 'builtin', type: 'single' },
     gameMode: 'basic',
     player: {
       name: 'TestPlayer',

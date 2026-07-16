@@ -4,8 +4,8 @@
 
 use std::sync::Arc;
 
-use tokio::sync::Mutex;
 use tauri::{AppHandle, Emitter, State};
+use tokio::sync::Mutex;
 
 use crate::model::binary;
 use crate::model::download;
@@ -33,14 +33,18 @@ pub async fn ensure_binary(state: State<'_, ModelAppState>) -> Result<String, St
 
     if binary::binary_exists(data_dir) {
         binary::verify_binary(data_dir)?;
-        return Ok(binary::get_binary_path(data_dir).to_string_lossy().to_string());
+        return Ok(binary::get_binary_path(data_dir)
+            .to_string_lossy()
+            .to_string());
     }
 
     log::info!("llama-server binary not found, downloading …");
     binary::download_binary(data_dir, |_| {}).await?;
 
     binary::verify_binary(data_dir)?;
-    Ok(binary::get_binary_path(data_dir).to_string_lossy().to_string())
+    Ok(binary::get_binary_path(data_dir)
+        .to_string_lossy()
+        .to_string())
 }
 
 /// Start the llama-server process with the given model.
@@ -62,9 +66,7 @@ pub async fn start_server(
     // Ensure the binary exists & is valid
     let binary_path = binary::get_binary_path(&state.db.data_dir);
     if !binary::binary_exists(&state.db.data_dir) {
-        return Err(
-            "llama-server binary not found. Call `ensure_binary` first.".to_string(),
-        );
+        return Err("llama-server binary not found. Call `ensure_binary` first.".to_string());
     }
     binary::verify_binary(&state.db.data_dir)?;
 
@@ -112,9 +114,7 @@ pub async fn stop_server(state: State<'_, ModelAppState>) -> Result<(), String> 
 
 /// Return the current server status.
 #[tauri::command]
-pub async fn get_server_status(
-    state: State<'_, ModelAppState>,
-) -> Result<ServerStatus, String> {
+pub async fn get_server_status(state: State<'_, ModelAppState>) -> Result<ServerStatus, String> {
     let guard = state.llama_process.lock().await;
     if let Some(p) = guard.as_ref() {
         Ok(ServerStatus {
@@ -170,20 +170,15 @@ pub async fn download_model(
         let app_for_progress = app.clone();
         let mid_for_progress = mid.clone();
 
-        let result = download::download_model(
-            &mid,
-            &data_dir,
-            &pool,
-            move |progress| {
-                let _ = app_for_progress.emit(
-                    "model_download_progress",
-                    serde_json::json!({
-                        "model_id": mid_for_progress,
-                        "progress": progress,
-                    }),
-                );
-            },
-        )
+        let result = download::download_model(&mid, &data_dir, &pool, move |progress| {
+            let _ = app_for_progress.emit(
+                "model_download_progress",
+                serde_json::json!({
+                    "model_id": mid_for_progress,
+                    "progress": progress,
+                }),
+            );
+        })
         .await;
 
         match result {
@@ -221,10 +216,7 @@ pub fn cancel_download() -> Result<(), String> {
 
 /// Delete a previously downloaded model from disk and the database.
 #[tauri::command]
-pub async fn delete_model(
-    model_id: String,
-    state: State<'_, ModelAppState>,
-) -> Result<(), String> {
+pub async fn delete_model(model_id: String, state: State<'_, ModelAppState>) -> Result<(), String> {
     download::delete_model(&model_id, &state.db.data_dir, &state.db.pool).await
 }
 
