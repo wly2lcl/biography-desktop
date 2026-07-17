@@ -50,7 +50,7 @@ npm run build     # tsc && vite build (tauri build 的前置步骤)
 - 向后兼容: 无 `endReason` 的旧会话默认 `isComplete = true`
 
 ### Rust 侧
-- `src-tauri/src/main.rs` — 稳定版注册 27 个 Tauri commands；`local-model` 实验 feature 额外注册 10 个
+- `src-tauri/src/main.rs` — 稳定版注册 32 个 Tauri commands；`local-model` 实验 feature 额外注册 10 个
 - 数据库: `~/.local/share/biography-desktop/biography.db` (Linux) / `AppData/Roaming` (Win) / `Library/Application Support` (macOS)
 - `sqlx` 使用 `runtime-tokio`，SQLite 通过 `SqlitePool` 管理
 
@@ -69,7 +69,7 @@ npx vitest run src/services/prompts.test.ts  # 运行单个测试文件
 
 - 环境: happy-dom, globals: true
 - 匹配: `src/**/*.test.ts`, `src/**/*.test.tsx`
-- 当前门禁: 265 项前端测试、45 项 Rust 独立测试；全局行覆盖率不低于 65%
+- 当前门禁: 316 项前端测试、默认及 `local-model` 各 61 项 Rust 测试；全局行覆盖率不低于 70%
 
 ## CI/CD
 

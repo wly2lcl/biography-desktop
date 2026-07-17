@@ -1,4 +1,6 @@
 import { getErrorMessage } from '@/utils/errors';
+import { desktopDataGateway } from '@/infrastructure/desktopDataGateway';
+import type { DesktopDataGateway } from '@/infrastructure/contracts';
 
 export interface RestoreSessionBackupCallbacks {
   resetCurrentSession: () => void;
@@ -16,10 +18,10 @@ export class DatabaseRestoreRefreshError extends Error {
 
 export async function restoreSessionBackup(
   backupPath: string,
-  callbacks: RestoreSessionBackupCallbacks
+  callbacks: RestoreSessionBackupCallbacks,
+  gateway: Pick<DesktopDataGateway, 'restore'> = desktopDataGateway
 ): Promise<void> {
-  const { invoke } = await import('@tauri-apps/api/core');
-  await invoke('restore_database', { backupPath });
+  await gateway.restore(backupPath);
 
   callbacks.resetCurrentSession();
   const refreshResults = await Promise.allSettled([

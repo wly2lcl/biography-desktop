@@ -22,7 +22,7 @@ pub struct SessionListResult {
 const SESSION_COLUMNS: &str =
     "session_id, schema_version, world, world_source, world_type, game_mode, system, player_name,
      player_history, player_attributes, player_inventory, player_summary, player_qa_history,
-     scenarios_json, is_active, end_reason, biography, created_at";
+     scenarios_json, is_active, end_reason, biography, biography_generation, created_at";
 
 fn parse_json(field: &str, raw: &str) -> Result<Value, String> {
     serde_json::from_str(raw)
@@ -35,6 +35,10 @@ fn row_to_session(row: &sqlx::sqlite::SqliteRow) -> Result<Value, String> {
     let inventory = parse_json("player_inventory", row.get("player_inventory"))?;
     let qa_history = parse_json("player_qa_history", row.get("player_qa_history"))?;
     let scenarios = parse_json("scenarios_json", row.get("scenarios_json"))?;
+    let biography_generation = row
+        .get::<Option<String>, _>("biography_generation")
+        .map(|raw| parse_json("biography_generation", &raw))
+        .transpose()?;
 
     if !history.is_array()
         || !inventory.is_array()
@@ -80,6 +84,7 @@ fn row_to_session(row: &sqlx::sqlite::SqliteRow) -> Result<Value, String> {
         "isActive": row.get::<bool, _>("is_active"),
         "endReason": row.get::<Option<String>, _>("end_reason"),
         "biography": row.get::<Option<String>, _>("biography"),
+        "biographyGeneration": biography_generation,
         "createdAt": created_at,
     }))
 }
@@ -91,13 +96,17 @@ async fn save_session_into_pool(pool: &SqlitePool, session: &Value) -> Result<()
         .or_else(|| session["world"].as_str())
         .ok_or("Missing worldRef.name")?;
     let created_at = session["createdAt"].as_str();
+    let biography_generation = session
+        .get("biographyGeneration")
+        .filter(|value| !value.is_null())
+        .map(Value::to_string);
 
     sqlx::query(
         "INSERT INTO sessions
          (session_id, schema_version, world, world_source, world_type, game_mode, system, player_name,
           player_history, player_attributes, player_inventory, player_summary, player_qa_history,
-          scenarios_json, is_active, end_reason, biography, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), datetime('now'))
+          scenarios_json, is_active, end_reason, biography, biography_generation, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), datetime('now'))
          ON CONFLICT(session_id) DO UPDATE SET
           schema_version=excluded.schema_version, world=excluded.world,
           world_source=excluded.world_source, world_type=excluded.world_type,
@@ -106,7 +115,8 @@ async fn save_session_into_pool(pool: &SqlitePool, session: &Value) -> Result<()
           player_inventory=excluded.player_inventory, player_summary=excluded.player_summary,
           player_qa_history=excluded.player_qa_history, scenarios_json=excluded.scenarios_json,
           is_active=excluded.is_active, end_reason=excluded.end_reason,
-          biography=excluded.biography, updated_at=datetime('now')",
+          biography=excluded.biography, biography_generation=excluded.biography_generation,
+          updated_at=datetime('now')",
     )
     .bind(session_id)
     .bind(session["schemaVersion"].as_i64().unwrap_or(2))
@@ -125,6 +135,7 @@ async fn save_session_into_pool(pool: &SqlitePool, session: &Value) -> Result<()
     .bind(if session["isActive"].as_bool().unwrap_or(true) { 1 } else { 0 })
     .bind(session["endReason"].as_str())
     .bind(session["biography"].as_str())
+    .bind(biography_generation)
     .bind(created_at)
     .execute(pool)
     .await
@@ -262,6 +273,11 @@ mod tests {
 
         let mut update = session("2099-01-01T00:00:00.000Z");
         update["biography"] = json!("传记");
+        update["biographyGeneration"] = json!({
+            "provider": "openai",
+            "model": "gpt-4o-mini",
+            "generatedAt": "2026-01-02T00:00:00.000Z"
+        });
         save_session_into_pool(&pool, &update).await.unwrap();
 
         let restored = get_session_from_pool(&pool, "round-trip")
@@ -274,6 +290,8 @@ mod tests {
         assert_eq!(restored["createdAt"], original_created_at);
         assert_eq!(restored["player"]["currentScenario"], "scene");
         assert_eq!(restored["biography"], "传记");
+        assert_eq!(restored["biographyGeneration"]["provider"], "openai");
+        assert_eq!(restored["biographyGeneration"]["model"], "gpt-4o-mini");
 
         for (index, reason) in ["player_ended", "story_ending", "max_choices", "max_history"]
             .iter()

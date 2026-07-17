@@ -6,6 +6,7 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
 
 import {
   loadApiKey,
+  isApiKeyConfigured,
   loadSettings,
   providerRequiresApiKey,
   providerRequiresCloudConsent,
@@ -150,35 +151,67 @@ describe('settings persistence boundaries', () => {
 });
 
 describe('API key runtime boundary', () => {
-  it('uses the keyring when Tauri 2 exposes only __TAURI_INTERNALS__', async () => {
+  it('keeps keyring secrets out of the WebView when Tauri exposes only __TAURI_INTERNALS__', async () => {
     window.__TAURI_INTERNALS__ = {};
     localStorage.setItem('bio_api_key', 'insecure-web-copy');
-    invokeMock.mockResolvedValueOnce('secure-key').mockResolvedValueOnce(undefined);
+    invokeMock.mockResolvedValueOnce(true).mockResolvedValueOnce(undefined);
 
-    await expect(loadApiKey()).resolves.toBe('secure-key');
-    await saveApiKey('next-secure-key');
+    await expect(loadApiKey('deepseek', '')).resolves.toBe('');
+    await expect(isApiKeyConfigured('deepseek', '')).resolves.toBe(true);
+    await saveApiKey('next-secure-key', 'deepseek', '');
 
-    expect(invokeMock).toHaveBeenNthCalledWith(1, 'get_api_key');
+    expect(invokeMock).toHaveBeenNthCalledWith(1, 'has_api_key', {
+      provider: 'deepseek', baseUrl: '', migrateLegacy: false,
+    });
     expect(invokeMock).toHaveBeenNthCalledWith(2, 'set_api_key', {
       apiKey: 'next-secure-key',
+      provider: 'deepseek',
+      baseUrl: '',
     });
     expect(localStorage.getItem('bio_api_key')).toBe('insecure-web-copy');
   });
 
   it('keeps localStorage limited to the Web development runtime', async () => {
     localStorage.setItem('bio_api_key', 'web-key');
-    await expect(loadApiKey()).resolves.toBe('web-key');
-    await saveApiKey('updated-web-key');
-    expect(localStorage.getItem('bio_api_key')).toBe('updated-web-key');
+    await expect(loadApiKey('deepseek', '', true)).resolves.toBe('web-key');
+    await saveApiKey('updated-web-key', 'deepseek', '');
+    expect(localStorage.getItem('bio_api_key')).toBeNull();
+    expect(localStorage.getItem('bio_api_key:deepseek')).toBe('updated-web-key');
     expect(invokeMock).not.toHaveBeenCalled();
   });
 
-  it('surfaces a Tauri keyring read failure instead of using Web storage', async () => {
+  it('migrates a legacy Web key only when the saved provider explicitly requests it', async () => {
+    localStorage.setItem('bio_api_key', 'legacy-key');
+
+    await expect(isApiKeyConfigured('openai', '')).resolves.toBe(false);
+    expect(localStorage.getItem('bio_api_key')).toBe('legacy-key');
+    expect(localStorage.getItem('bio_api_key:openai')).toBeNull();
+
+    await expect(loadApiKey('openai', '', true)).resolves.toBe('legacy-key');
+    expect(localStorage.getItem('bio_api_key')).toBeNull();
+    expect(localStorage.getItem('bio_api_key:openai')).toBe('legacy-key');
+  });
+
+  it('isolates Web keys by stable provider and custom Base URL', async () => {
+    await saveApiKey('deepseek-key', 'deepseek', '');
+    await saveApiKey('openai-key', 'openai', '');
+    await saveApiKey('custom-key', 'custom', 'https://gateway.example.com/v1');
+
+    await expect(loadApiKey('deepseek', '')).resolves.toBe('deepseek-key');
+    await expect(loadApiKey('openai', '')).resolves.toBe('openai-key');
+    await expect(loadApiKey('custom', 'https://gateway.example.com/'))
+      .resolves.toBe('custom-key');
+    await expect(loadApiKey('custom', 'https://other.example.com'))
+      .resolves.toBe('');
+  });
+
+  it('surfaces a Tauri keyring status failure instead of using Web storage', async () => {
     window.__TAURI_INTERNALS__ = {};
     localStorage.setItem('bio_api_key', 'must-not-be-used');
     invokeMock.mockRejectedValue(new Error('keychain unavailable'));
 
-    await expect(loadApiKey()).rejects.toThrow('无法从系统钥匙串读取 API Key');
+    await expect(loadApiKey('openai', '')).resolves.toBe('');
+    await expect(isApiKeyConfigured('openai', '')).rejects.toThrow('无法读取系统钥匙串状态');
     expect(localStorage.getItem('bio_api_key')).toBe('must-not-be-used');
   });
 });

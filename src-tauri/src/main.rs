@@ -24,7 +24,7 @@ pub(crate) struct AppDb {
     pub(crate) data_dir: PathBuf,
 }
 
-fn init_app() -> (SqlitePool, PathBuf) {
+async fn init_app() -> Result<(AppDb, commands::startup::StartupState), String> {
     // Get home directory as fallback for app data
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
@@ -39,25 +39,60 @@ fn init_app() -> (SqlitePool, PathBuf) {
     #[cfg(target_os = "windows")]
     let data_dir = PathBuf::from(home).join("AppData/Roaming/biography-desktop");
 
-    std::fs::create_dir_all(&data_dir).expect("failed to create app data dir");
-    std::fs::create_dir_all(data_dir.join("worlds")).expect("failed to create worlds dir");
-    std::fs::create_dir_all(data_dir.join("backups")).expect("failed to create backups dir");
-
     let db_path = data_dir.join("biography.db");
-
-    // Use a local runtime to initialize the database
-    let rt = tokio::runtime::Runtime::new().expect("failed to create runtime");
-    let pool = rt.block_on(async {
-        let pool = SqlitePool::connect(db_path.to_str().unwrap())
+    let disk_result: Result<SqlitePool, String> = async {
+        std::fs::create_dir_all(&data_dir)
+            .map_err(|error| format!("无法创建应用数据目录：{error}"))?;
+        std::fs::create_dir_all(data_dir.join("worlds"))
+            .map_err(|error| format!("无法创建世界目录：{error}"))?;
+        std::fs::create_dir_all(data_dir.join("backups"))
+            .map_err(|error| format!("无法创建备份目录：{error}"))?;
+        let path = db_path
+            .to_str()
+            .ok_or_else(|| "数据库路径不是有效 UTF-8".to_string())?;
+        let pool = SqlitePool::connect(path)
             .await
-            .expect("failed to connect to database");
+            .map_err(|error| format!("无法连接数据库：{error}"))?;
         db::init_db(&pool)
             .await
-            .expect("failed to initialize database");
-        pool
-    });
+            .map_err(|error| format!("无法初始化数据库：{error}"))?;
+        Ok(pool)
+    }
+    .await;
 
-    (pool, data_dir)
+    match disk_result {
+        Ok(pool) => Ok((
+            AppDb {
+                pool,
+                data_dir: data_dir.clone(),
+            },
+            commands::startup::StartupState {
+                data_dir,
+                startup_error: None,
+                degraded: false,
+            },
+        )),
+        Err(startup_error) => {
+            log::error!("Persistent database startup failed: {startup_error}");
+            let pool = SqlitePool::connect("sqlite::memory:")
+                .await
+                .map_err(|error| format!("内存数据库也无法启动：{error}"))?;
+            db::init_db(&pool)
+                .await
+                .map_err(|error| format!("内存数据库初始化失败：{error}"))?;
+            Ok((
+                AppDb {
+                    pool,
+                    data_dir: data_dir.clone(),
+                },
+                commands::startup::StartupState {
+                    data_dir,
+                    startup_error: Some(startup_error),
+                    degraded: true,
+                },
+            ))
+        }
+    }
 }
 
 #[tokio::main]
@@ -66,14 +101,20 @@ async fn main() {
     #[cfg(debug_assertions)]
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    let (pool, data_dir) = init_app();
+    let (app_db, startup_state) = match init_app().await {
+        Ok(state) => state,
+        Err(error) => {
+            eprintln!("Biography Desktop failed to start: {error}");
+            return;
+        }
+    };
     let context = tauri::generate_context!();
-
-    let app_db = AppDb { pool, data_dir };
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(app_db.clone());
+        .manage(app_db.clone())
+        .manage(startup_state)
+        .manage(commands::llm::LlmTransportState::default());
 
     #[cfg(feature = "local-model")]
     let model_state = ModelAppState {
@@ -104,11 +145,12 @@ async fn main() {
             commands::db::delete_session,
             commands::config::get_config,
             commands::config::set_config,
-            commands::config::get_api_key,
+            commands::config::has_api_key,
             commands::config::set_api_key,
             commands::world::list_worlds,
             commands::world::load_world,
             commands::world::save_world,
+            commands::world::save_world_copy,
             commands::world::delete_world,
             commands::world::export_world,
             commands::world::import_world,
@@ -125,6 +167,10 @@ async fn main() {
             commands::data::import_full_data,
             commands::prompts::read_file,
             commands::prompts::write_file,
+            commands::startup::get_startup_status,
+            commands::startup::open_data_folder,
+            commands::llm::stream_llm,
+            commands::llm::cancel_llm_request,
             // Phase 9: Local model management
             commands::model::ensure_binary,
             commands::model::start_server,
@@ -146,11 +192,12 @@ async fn main() {
         commands::db::delete_session,
         commands::config::get_config,
         commands::config::set_config,
-        commands::config::get_api_key,
+        commands::config::has_api_key,
         commands::config::set_api_key,
         commands::world::list_worlds,
         commands::world::load_world,
         commands::world::save_world,
+        commands::world::save_world_copy,
         commands::world::delete_world,
         commands::world::export_world,
         commands::world::import_world,
@@ -167,6 +214,10 @@ async fn main() {
         commands::data::import_full_data,
         commands::prompts::read_file,
         commands::prompts::write_file,
+        commands::startup::get_startup_status,
+        commands::startup::open_data_folder,
+        commands::llm::stream_llm,
+        commands::llm::cancel_llm_request,
     ]);
 
     builder

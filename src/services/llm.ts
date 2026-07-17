@@ -2,6 +2,7 @@
 
 import { parseSSE } from '../utils/sse';
 import type { LlmProvider } from '../types/settings';
+import { availableInputTokens, estimateTokens } from './contextBudget';
 
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant';
@@ -22,6 +23,7 @@ export interface LLMConfig {
   model: string;
   temperature: number;
   maxTokens: number;
+  contextWindow?: number;
   timeout: number;
 }
 
@@ -33,7 +35,8 @@ export type LLMErrorCode =
   | 'network'
   | 'server'
   | 'invalid_response'
-  | 'cancelled';
+  | 'cancelled'
+  | 'context_overflow';
 
 export class LLMError extends Error {
   constructor(
@@ -97,7 +100,7 @@ export function validateLlmBaseUrl(
   if (parsed.username || parsed.password) {
     return { valid: false, error: 'Base URL 不能包含用户名或密码' };
   }
-  if (parsed.search || parsed.hash) {
+  if (parsed.search || parsed.hash || candidate.includes('?') || candidate.includes('#')) {
     return { valid: false, error: 'Base URL 不能包含查询参数或片段标识' };
   }
   if (parsed.protocol === 'http:' && !LOOPBACK_HTTP_HOSTS.has(parsed.hostname.toLowerCase())) {
@@ -114,7 +117,7 @@ function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.trim().replace(/\/+$/, '').replace(/\/v1$/i, '');
 }
 
-function createOpenAICompatibleAdapter(id: LlmProvider): LlmProviderAdapter {
+export function createOpenAICompatibleAdapter(id: LlmProvider): LlmProviderAdapter {
   return {
     id,
     createRequest(messages, config, signal) {
@@ -143,24 +146,31 @@ function createOpenAICompatibleAdapter(id: LlmProvider): LlmProviderAdapter {
   };
 }
 
-export const LLM_PROVIDER_ADAPTERS: Readonly<Record<LlmProvider, LlmProviderAdapter>> = {
+export const STABLE_LLM_PROVIDER_ADAPTERS: Readonly<
+  Record<StableLlmProvider, LlmProviderAdapter>
+> = {
   deepseek: createOpenAICompatibleAdapter('deepseek'),
   openai: createOpenAICompatibleAdapter('openai'),
-  ollama: createOpenAICompatibleAdapter('ollama'),
-  llamacpp: createOpenAICompatibleAdapter('llamacpp'),
-  llamacpp_local: createOpenAICompatibleAdapter('llamacpp_local'),
-  custom: createOpenAICompatibleAdapter('custom'),
 };
 
-function selectAdapter(config: LLMConfig): LlmProviderAdapter {
+async function selectAdapter(config: LLMConfig): Promise<LlmProviderAdapter> {
   if (config.provider) {
-    const adapter = (
-      LLM_PROVIDER_ADAPTERS as Partial<Record<string, LlmProviderAdapter>>
-    )[config.provider];
-    if (!adapter) {
+    if (config.provider === 'deepseek' || config.provider === 'openai') {
+      return STABLE_LLM_PROVIDER_ADAPTERS[config.provider];
+    }
+    if (import.meta.env.VITE_ENABLE_EXPERIMENTAL_PROVIDERS !== 'true') {
       throw new LLMError('invalid_config', `不支持的 LLM 提供商：${config.provider}`);
     }
-    return adapter;
+    const {
+      EXPERIMENTAL_ADAPTER_BUNDLE_MARKER,
+      EXPERIMENTAL_LLM_PROVIDER_ADAPTERS,
+    } = await import(
+      './llmExperimentalProviders'
+    );
+    if (EXPERIMENTAL_ADAPTER_BUNDLE_MARKER !== 'BIOGRAPHY_EXPERIMENTAL_ADAPTER_MODULE') {
+      throw new LLMError('invalid_config', '实验提供商模块校验失败');
+    }
+    return EXPERIMENTAL_LLM_PROVIDER_ADAPTERS[config.provider];
   }
   if (!config.baseUrl.trim()) {
     throw new LLMError(
@@ -171,7 +181,7 @@ function selectAdapter(config: LLMConfig): LlmProviderAdapter {
   const provider = config.baseUrl.toLowerCase().includes('openai.com')
     ? 'openai'
     : 'deepseek';
-  return LLM_PROVIDER_ADAPTERS[provider];
+  return STABLE_LLM_PROVIDER_ADAPTERS[provider];
 }
 
 function parseRetryAfter(value: string | null): number | undefined {
@@ -229,7 +239,25 @@ export async function* streamChat(
 
   try {
     if (signal?.aborted) controller.abort();
-    const request = selectAdapter(config).createRequest(messages, config, controller.signal);
+    const contextWindowTokens = config.contextWindow ?? 65536;
+    const safetyMarginTokens = Math.max(1024, Math.floor(contextWindowTokens * 0.05));
+    const inputTokens = messages.reduce(
+      (total, message) => total + estimateTokens(message.content),
+      0
+    );
+    const available = availableInputTokens({
+      contextWindowTokens,
+      reservedOutputTokens: config.maxTokens,
+      safetyMarginTokens,
+    });
+    if (inputTokens > available) {
+      throw new LLMError(
+        'context_overflow',
+        `请求上下文约 ${inputTokens} tokens，超过可用输入预算 ${available} tokens`
+      );
+    }
+    const adapter = await selectAdapter(config);
+    const request = adapter.createRequest(messages, config, controller.signal);
     const response = await fetch(request.url, request.init);
     if (!response.ok) throw await responseError(response);
     if (!response.body) throw new LLMError('invalid_response', 'LLM response body is empty');

@@ -18,10 +18,12 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'json-summary'],
       thresholds: {
-        lines: 65,
+        lines: 70,
         'src/game/engine.ts': { lines: 80 },
         'src/services/llm.ts': { lines: 80 },
         'src/services/parser.ts': { lines: 80 },
+        'src/components/screens/SettingsScreen.tsx': { lines: 60 },
+        'src/services/databaseRestore.ts': { lines: 60 },
       },
     },
   },

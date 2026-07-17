@@ -29,6 +29,7 @@ describe('llm.ts', () => {
     vi.restoreAllMocks();
     globalThis.fetch = originalFetch;
     vi.useRealTimers();
+    vi.unstubAllEnvs();
   });
 
   describe('normalizeBaseUrl', () => {
@@ -73,6 +74,8 @@ describe('llm.ts', () => {
       'https://user:password@gateway.example.com',
       'https://gateway.example.com/v1?tenant=demo',
       'https://gateway.example.com/v1#fragment',
+      'https://gateway.example.com/v1?',
+      'https://gateway.example.com/v1#',
     ])('rejects unsafe or invalid URL %s before fetch', async (baseUrl) => {
       globalThis.fetch = vi.fn();
       const { streamChatText } = await import('./llm');
@@ -266,6 +269,8 @@ describe('llm.ts', () => {
     });
 
     it('keeps the local provider identity when using a loopback endpoint', async () => {
+      vi.stubEnv('VITE_ENABLE_EXPERIMENTAL_PROVIDERS', 'true');
+      vi.resetModules();
       globalThis.fetch = vi.fn().mockResolvedValue(
         mockStreamResponse(['{"choices":[{"delta":{"content":"OK"}}]}'])
       );

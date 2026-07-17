@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useGameStore } from './store/gameStore';
 import StartScreen from './components/screens/StartScreen';
 import SystemScreen from './components/screens/SystemScreen';
@@ -9,8 +9,13 @@ import WorldManagerScreen from './components/screens/WorldManagerScreen';
 import LoadingOverlay from './components/common/LoadingOverlay';
 import ErrorModal from './components/common/ErrorModal';
 import ConfirmModal from './components/common/ConfirmModal';
+import StartupRecoveryScreen from './components/screens/StartupRecoveryScreen';
+import DemoScreen from './components/screens/DemoScreen';
+import { getStartupStatus, openDataFolder, type StartupStatus } from './services/startup';
 
 function App() {
+  const [startupStatus, setStartupStatus] = useState<StartupStatus | null>(null);
+  const [continueDegraded, setContinueDegraded] = useState(false);
   const {
     currentScreen,
     isLoading,
@@ -23,19 +28,36 @@ function App() {
     setError,
   } = useGameStore();
 
-  // Initialize app on mount
-  useEffect(() => {
-    const init = async () => {
-      const store = useGameStore.getState();
-      await store.loadSettings();
-      await Promise.allSettled([
-        store.loadConfig(),
-        store.loadWorlds(),
-        store.checkResume(),
-      ]);
-    };
-    init();
+  const initializeApplication = useCallback(async () => {
+    const store = useGameStore.getState();
+    await store.loadSettings();
+    await Promise.allSettled([
+      store.loadConfig(),
+      store.loadWorlds(),
+      store.checkResume(),
+    ]);
   }, []);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const status = await getStartupStatus();
+        setStartupStatus(status);
+        if (status.ready) await initializeApplication();
+      } catch (startupError) {
+        setStartupStatus({
+          ready: false,
+          degraded: true,
+          dataDir: '',
+          error: startupError instanceof Error ? startupError.message : String(startupError),
+        });
+      }
+    })();
+  }, [initializeApplication]);
+
+  useEffect(() => {
+    if (continueDegraded) void initializeApplication();
+  }, [continueDegraded, initializeApplication]);
 
   useEffect(() => {
     if (error) {
@@ -53,10 +75,22 @@ function App() {
         return <GameScreen />;
       case 'biography':
         return <BiographyScreen />;
+      case 'demo':
+        return <DemoScreen />;
       default:
         return <StartScreen />;
     }
   };
+
+  if (startupStatus && !startupStatus.ready && !continueDegraded) {
+    return (
+      <StartupRecoveryScreen
+        status={startupStatus}
+        onOpenDataFolder={openDataFolder}
+        onContinueTemporarily={() => setContinueDegraded(true)}
+      />
+    );
+  }
 
   return (
     <div className="relative w-full h-full overflow-hidden">
@@ -69,12 +103,15 @@ function App() {
       {isLoading && <LoadingOverlay text={loadingText} />}
       {error && (
         <ErrorModal
-          message={error}
+          message={`${error.message}\n\n诊断编号：${error.diagnosticId}`}
           onClose={() => setError(null)}
-          onRetry={() => {
-            setError(null);
-            // Retry logic handled by caller
-          }}
+          onRetry={error.retryAction
+            ? () => {
+                const retry = error.retryAction;
+                setError(null);
+                void retry?.();
+              }
+            : undefined}
         />
       )}
       {showConfirmEnd && (
@@ -112,7 +149,7 @@ function App() {
           }}
         />
       )}
-      {showSettings && <SettingsScreen />}
+      {showSettings && <SettingsScreen degradedMode={continueDegraded} />}
       {showWorldManager && <WorldManagerScreen />}
     </div>
   );

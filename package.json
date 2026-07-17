@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "verify:stable-bundle": "node scripts/verify-stable-bundle.mjs",
     "build:experimental": "tsc && vite build --mode experimental",
     "prebuild:icons": "bash scripts/verify-icons.sh",
     "preview": "vite preview",

@@ -180,7 +180,7 @@ describe('game store request isolation', () => {
     await useGameStore.getState().checkResume();
 
     expect(useGameStore.getState().resumeSessions).toEqual([]);
-    expect(useGameStore.getState().error).toContain('database unavailable');
+    expect(useGameStore.getState().error?.message).toContain('database unavailable');
   });
 
   it('rethrows a session-list read failure in strict refresh mode', async () => {
@@ -190,7 +190,7 @@ describe('game store request isolation', () => {
 
     await expect(useGameStore.getState().checkResume({ throwOnError: true }))
       .rejects.toBe(failure);
-    expect(useGameStore.getState().error).toContain('strict database unavailable');
+    expect(useGameStore.getState().error?.message).toContain('strict database unavailable');
   });
 
   it('loads and explicitly saves settings while updating engine limits', async () => {
@@ -349,6 +349,34 @@ describe('game store request isolation', () => {
     expect(localStorage.getItem('bio_api_key')).toBe('old-key');
   });
 
+  it('rolls back app_settings when legacy app_config cleanup fails', async () => {
+    const previousSettings = {
+      ...DEFAULT_SETTINGS,
+      model: 'original-model',
+      cloudPrivacyAcknowledged: true,
+    };
+    useGameStore.setState({
+      settings: previousSettings,
+      config: {
+        provider: 'deepseek', apiKey: '', baseUrl: previousSettings.baseUrl,
+        model: previousSettings.model, temperature: 0.8, maxTokens: 4096, timeout: 120000,
+      },
+    });
+    const storage = useGameStore.getState().storage;
+    const setConfig = vi.spyOn(storage, 'setConfig')
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('legacy cleanup failed'))
+      .mockResolvedValueOnce(undefined);
+
+    await expect(useGameStore.getState().updateSettings({ model: 'changed-model' }))
+      .rejects.toThrow('legacy cleanup failed');
+
+    expect(useGameStore.getState().settings).toEqual(previousSettings);
+    expect(setConfig).toHaveBeenCalledTimes(3);
+    expect(setConfig.mock.calls[2][0]).toBe('app_settings');
+    expect(JSON.parse(setConfig.mock.calls[2][1])).toMatchObject({ model: 'original-model' });
+  });
+
   it('preserves the keyring value when legacy app config is malformed', async () => {
     localStorage.setItem('bio_api_key', 'keyring-key');
     const storage = useGameStore.getState().storage;
@@ -398,12 +426,83 @@ describe('game store request isolation', () => {
     });
   });
 
+  it('retries a failed system-mode start with the original pending parameters', async () => {
+    const proposal = { id: 'p', title: '系统', description: '说明', abilities: '能力' };
+    const pendingStartParams = {
+      name: '角色名',
+      world: 'world',
+      isBuiltIn: false,
+      type: 'single' as const,
+    };
+    useGameStore.setState({ selectedSystem: proposal, pendingStartParams });
+    const created = {
+      ...session(),
+      gameMode: 'system' as const,
+      system: '系统',
+      worldRef: { name: 'world', source: 'user' as const, type: 'single' as const },
+    };
+    const start = vi.spyOn(useGameStore.getState().engine, 'startGame')
+      .mockRejectedValueOnce(new Error('temporary failure'))
+      .mockResolvedValueOnce(created);
+    vi.spyOn(useGameStore.getState().storage, 'saveSession').mockResolvedValue(undefined);
+
+    await useGameStore.getState().startSystemGame();
+    expect(useGameStore.getState()).toMatchObject({
+      selectedSystem: proposal,
+      pendingStartParams,
+      isStreaming: false,
+    });
+    const retryAction = useGameStore.getState().error?.retryAction;
+    expect(retryAction).toBeTypeOf('function');
+    await retryAction?.();
+
+    expect(start).toHaveBeenCalledTimes(2);
+    expect(start).toHaveBeenNthCalledWith(
+      2,
+      '角色名',
+      'world',
+      'system',
+      '系统\n\n说明\n\n能力',
+      expect.any(Object),
+      false,
+      'single',
+      expect.any(Function),
+      expect.any(AbortSignal)
+    );
+    expect(useGameStore.getState()).toMatchObject({
+      session: created,
+      selectedSystem: null,
+      pendingStartParams: null,
+      isStreaming: false,
+    });
+  });
+
+  it('clears pending system-mode parameters when the user exits to a new game', () => {
+    useGameStore.setState({
+      selectedSystem: { id: 'p', title: '系统', description: '说明', abilities: '能力' },
+      pendingStartParams: {
+        name: '角色名', world: 'world', isBuiltIn: true, type: 'directory',
+      },
+    });
+
+    useGameStore.getState().newGame();
+
+    expect(useGameStore.getState()).toMatchObject({
+      currentScreen: 'start',
+      selectedSystem: null,
+      pendingStartParams: null,
+    });
+  });
+
   it('generates an incomplete biography with the persisted user WorldRef', async () => {
     const ended = session();
     ended.world = 'mine.md';
     ended.worldRef = { name: 'mine.md', source: 'user', type: 'single' };
     ended.isActive = false;
     ended.endReason = 'player_ended';
+    ended.biographyGeneration = {
+      provider: 'openai', model: 'old-model', generatedAt: '2025-01-01T00:00:00.000Z',
+    };
     localStorage.setItem('bio_world_mine.md', '# Mine\n世界内容');
     useGameStore.setState({ session: ended, isStreaming: false, activeRequestId: null });
     const payload = JSON.stringify({ choices: [{ delta: { content: '未完待续的传记' } }] });
@@ -412,8 +511,46 @@ describe('game store request isolation', () => {
 
     await useGameStore.getState().generateBiography();
     expect(useGameStore.getState().session?.biography).toContain('未完待续');
+    expect(useGameStore.getState().session?.biographyGeneration).toMatchObject({
+      provider: 'deepseek',
+      model: 'deepseek-chat',
+    });
+    expect(useGameStore.getState().session?.biographyGeneration?.generatedAt)
+      .toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(useGameStore.getState().session?.biographyGeneration?.generatedAt)
+      .not.toBe('2025-01-01T00:00:00.000Z');
     expect(useGameStore.getState().currentScreen).toBe('biography');
-    expect(save).toHaveBeenCalled();
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({
+      biographyGeneration: expect.objectContaining({ provider: 'deepseek' }),
+    }));
+  });
+
+  it('caps biography output tokens for a small configured context window', async () => {
+    const ended = session();
+    ended.isActive = false;
+    ended.endReason = 'player_ended';
+    useGameStore.setState({
+      session: ended,
+      config: {
+        provider: 'deepseek', apiKey: 'key', baseUrl: '', model: 'deepseek-chat',
+        temperature: 0, maxTokens: 4096, contextWindow: 6144, timeout: 1000,
+      },
+      isStreaming: false,
+    });
+    let requestedOutput = 0;
+    vi.spyOn(useGameStore.getState().engine, 'generateBiography')
+      .mockImplementation(async (workingSession, _builtIn, _type, llmConfig) => {
+        requestedOutput = llmConfig.maxTokens;
+        workingSession.biography = '传记';
+        return '传记';
+      });
+    vi.spyOn(useGameStore.getState().storage, 'saveSession').mockResolvedValue(undefined);
+
+    await useGameStore.getState().generateBiography();
+
+    expect(requestedOutput).toBe(4096);
+    expect(requestedOutput + 2048).toBeLessThanOrEqual(6144);
+    expect(useGameStore.getState().session?.biography).toBe('传记');
   });
 
   it('aborts biography streaming when the user skips it', async () => {
@@ -556,7 +693,7 @@ describe('game store request isolation', () => {
       .mockRejectedValue(new Error('database unavailable'));
 
     await expect(useGameStore.getState().endGame(false)).rejects.toThrow('database unavailable');
-    expect(useGameStore.getState().error).toContain('database unavailable');
+    expect(useGameStore.getState().error?.message).toContain('database unavailable');
     expect(useGameStore.getState().session?.isActive).toBe(true);
     expect(useGameStore.getState().session?.endReason).toBeUndefined();
   });

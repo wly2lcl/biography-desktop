@@ -317,6 +317,7 @@ dependencies = [
  "flate2",
  "fs2",
  "futures",
+ "httpdate",
  "keyring",
  "libc",
  "log",
@@ -333,6 +334,7 @@ dependencies = [
  "tauri-plugin-shell",
  "thiserror 1.0.69",
  "tokio",
+ "url",
  "uuid",
  "zip",
 ]

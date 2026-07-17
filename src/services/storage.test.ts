@@ -96,6 +96,24 @@ describe('session v1 -> v2 normalization', () => {
     expect(normalized.biography).toBeUndefined();
   });
 
+  it('preserves valid biography generation metadata and rejects malformed values', async () => {
+    const value = {
+      ...legacySession(),
+      schemaVersion: SESSION_SCHEMA_VERSION,
+      worldRef: { name: 'world', source: 'builtin', type: 'directory' },
+      biographyGeneration: {
+        provider: 'openai', model: 'gpt-4o-mini', generatedAt: '2026-07-17T00:00:00.000Z',
+      },
+    };
+    await expect(normalizeSession(value)).resolves.toMatchObject({
+      biographyGeneration: value.biographyGeneration,
+    });
+    await expect(normalizeSession({
+      ...value,
+      biographyGeneration: { provider: 'unknown', model: '', generatedAt: '' },
+    })).rejects.toThrow('传记生成元数据无效');
+  });
+
   it('rejects malformed nested player and choice data', async () => {
     await expect(normalizeSession({
       ...legacySession(),

@@ -8,34 +8,44 @@ import type {
   WorldInfo,
   AppConfig,
   SessionSummary,
-  ModelInfo,
-  DownloadedModel,
-  ServerStatus,
 } from '../types/models';
 import { SESSION_SCHEMA_VERSION } from '../types/models';
 import type { AppSettings } from '../types/settings';
 import { DEFAULT_SETTINGS } from '../types/settings';
+import type { AppError, AppErrorCode, RetryAction } from '../types/errors';
+import { createAppError, isAppError } from '../types/errors';
 import { GameEngine } from '../game/engine';
 import { createStorage } from '../services/storage';
 import { LLMError, type LLMConfig } from '../services/llm';
 import { listWorlds } from '../services/world';
 import {
   EXPERIMENTAL_PROVIDERS_ENABLED,
+  apiKeyStorageScope,
   loadSettings,
   saveSettings,
   loadApiKey,
+  isApiKeyConfigured,
   normalizeSettingsForBuild,
+  providerSupportsApiKey,
   saveApiKey,
+  clearApiKey as clearStoredApiKey,
   testConnection,
 } from '../services/config';
 import { generateId, generateQaId } from '../utils/format';
 import { getErrorMessage } from '../utils/errors';
+import { isTauriRuntime } from '../services/runtime';
 
 import { errorLogger } from '../services/errorLogger';
+import {
+  createLocalModelSlice,
+  type LocalModelSlice,
+} from '@/store/slices/localModelRuntime';
+import type { SessionRepository, SettingsRepository } from '../infrastructure/contracts';
+import { resolveModelCapability } from '../services/modelCapabilities';
 
-type Screen = 'start' | 'system' | 'game' | 'biography';
+type Screen = 'start' | 'system' | 'game' | 'biography' | 'demo';
 
-interface GameState {
+interface GameState extends LocalModelSlice {
   // Screen state
   currentScreen: Screen;
   showSettings: boolean;
@@ -49,6 +59,7 @@ interface GameState {
   pendingStartParams: { name: string; world: string; isBuiltIn: boolean; type: 'single' | 'directory' } | null;
   config: AppConfig | null;
   settings: AppSettings;
+  apiKeyConfigured: boolean;
   worlds: WorldInfo[];
   resumeSessions: SessionSummary[];
   resumeWarning: string | null;
@@ -65,20 +76,13 @@ interface GameState {
   // UI state
   isLoading: boolean;
   loadingText: string;
-  error: string | null;
+  error: AppError | null;
   showConfirmEnd: boolean;
   showConfirmBio: boolean;
 
   // Engine & storage
   engine: GameEngine;
-  storage: ReturnType<typeof createStorage>;
-
-  // Phase 9: Local model management state
-  serverStatus: ServerStatus | null;
-  availableModels: ModelInfo[];
-  downloadedModels: DownloadedModel[];
-  downloadingModel: string | null;
-  downloadProgress: number;
+  storage: SessionRepository & SettingsRepository;
 
   // Actions - screen
   setScreen: (screen: Screen) => void;
@@ -88,26 +92,15 @@ interface GameState {
   // Actions - config
   setConfig: (config: AppConfig) => void;
   loadConfig: () => Promise<void>;
-  saveConfig: () => Promise<void>;
 
   // Actions - settings
   loadSettings: () => Promise<void>;
   updateSettings: (updates: Partial<AppSettings>) => Promise<void>;
+  clearApiKey: (scope?: Pick<AppSettings, 'llmProvider' | 'baseUrl'>) => Promise<void>;
   testLlmConnection: (draft?: AppSettings) => Promise<boolean>;
 
   // Actions - worlds
   loadWorlds: () => Promise<void>;
-
-  // Phase 9: Local model actions
-  refreshServerStatus: () => Promise<void>;
-  refreshAvailableModels: () => Promise<void>;
-  refreshDownloadedModels: () => Promise<void>;
-  startLocalServer: (modelPath: string, gpuLayers?: number, contextSize?: number) => Promise<void>;
-  stopLocalServer: () => Promise<void>;
-  startDownloadModel: (modelId: string) => Promise<void>;
-  cancelDownloadModel: () => Promise<void>;
-  deleteDownloadedModel: (modelId: string) => Promise<void>;
-  ensureBinary: () => Promise<string>;
 
   // Actions - game
   startBasicGame: (name: string, world: string, isBuiltIn: boolean, type: 'single' | 'directory') => Promise<void>;
@@ -129,13 +122,19 @@ interface GameState {
   askQuestion: (question: string) => Promise<void>;
 
   // Actions - utility
-  setError: (error: string | null) => void;
+  setError: (error: AppError | string | null) => void;
   setShowConfirmEnd: (show: boolean) => void;
   setShowConfirmBio: (show: boolean) => void;
   appendStreamedText: (text: string) => void;
 }
 
 function configToLlm(config: AppConfig): LLMConfig {
+  const capability = resolveModelCapability(
+    config.provider ?? 'deepseek',
+    config.model,
+    config.contextWindow,
+    config.maxTokens
+  );
   return {
     provider: config.provider,
     apiKey: config.apiKey,
@@ -143,6 +142,7 @@ function configToLlm(config: AppConfig): LLMConfig {
     model: config.model,
     temperature: config.temperature,
     maxTokens: config.maxTokens,
+    contextWindow: capability.contextWindowTokens,
     timeout: config.timeout,
   };
 }
@@ -156,6 +156,7 @@ function settingsToConfig(s: AppSettings): AppConfig {
     model: s.model,
     temperature: s.temperature,
     maxTokens: s.maxTokens,
+    contextWindow: s.contextWindow,
     timeout: s.timeout,
   };
 }
@@ -174,6 +175,7 @@ function settingsFromConfig(
     model: config.model,
     temperature: config.temperature,
     maxTokens: config.maxTokens,
+    contextWindow: config.contextWindow ?? current.contextWindow,
     timeout: config.timeout,
   });
 }
@@ -259,6 +261,7 @@ function formatErrorMessage(err: unknown, defaultMsg: string): string {
       server: '模型服务暂时不可用，请稍后重试',
       invalid_response: '模型返回了无效响应，请重试或更换模型',
       cancelled: '请求已取消',
+      context_overflow: '请求上下文超过模型容量，请缩短世界观或调高上下文窗口设置',
     };
     return messages[err.code];
   }
@@ -288,6 +291,27 @@ function formatErrorMessage(err: unknown, defaultMsg: string): string {
   }
   const message = getErrorMessage(err, '');
   return message ? `操作失败: ${message}` : defaultMsg;
+}
+
+function errorCode(error: unknown): AppErrorCode {
+  if (error instanceof LLMError) return error.code;
+  return 'operation_failed';
+}
+
+function appError(
+  error: unknown,
+  fallback: string,
+  retryAction?: RetryAction,
+  code?: AppErrorCode
+): AppError {
+  if (isAppError(error)) {
+    return retryAction ? { ...error, retryAction } : error;
+  }
+  return createAppError(
+    code ?? errorCode(error),
+    formatErrorMessage(error, fallback),
+    retryAction
+  );
 }
 
 export const useGameStore = create<GameState>((set, get) => {
@@ -336,6 +360,7 @@ export const useGameStore = create<GameState>((set, get) => {
   pendingStartParams: null,
   config: null,
   settings: { ...DEFAULT_SETTINGS },
+  apiKeyConfigured: false,
   worlds: [],
   resumeSessions: [],
   resumeWarning: null,
@@ -357,12 +382,7 @@ export const useGameStore = create<GameState>((set, get) => {
   engine: new GameEngine(),
   storage: createStorage(),
 
-  // Phase 9: Local model initial state
-  serverStatus: null,
-  availableModels: [],
-  downloadedModels: [],
-  downloadingModel: null,
-  downloadProgress: 0,
+  ...createLocalModelSlice(set, get, appError),
 
   // Screen actions
   setScreen: (screen) => set({ currentScreen: screen }),
@@ -374,12 +394,26 @@ export const useGameStore = create<GameState>((set, get) => {
 
   loadConfig: async () => {
     const storage = get().storage;
-    let apiKey = '';
-    try {
-      apiKey = await loadApiKey();
-    } catch (error) {
-      set({ error: formatErrorMessage(error, '无法读取系统钥匙串中的 API Key') });
-    }
+    const readScopedKey = async (config: AppConfig): Promise<[string, boolean]> => {
+      const provider = config.provider ?? 'deepseek';
+      if (!providerSupportsApiKey(provider)) return ['', false];
+      try {
+        return await Promise.all([
+          loadApiKey(provider, config.baseUrl, true),
+          isApiKeyConfigured(provider, config.baseUrl, true),
+        ]);
+      } catch (error) {
+        set({
+          error: appError(
+            error,
+            '无法读取系统钥匙串中的 API Key',
+            () => get().loadConfig(),
+            'persistence'
+          ),
+        });
+        return ['', false];
+      }
+    };
 
     try {
       const [raw, currentSettingsRaw] = await Promise.all([
@@ -395,12 +429,12 @@ export const useGameStore = create<GameState>((set, get) => {
         delete parsed.apiKey;
         const settings = get().settings;
         const hasCurrentSettings = containsSettingsObject(currentSettingsRaw);
-        const current = { ...settingsToConfig(settings), apiKey };
+        const current = { ...settingsToConfig(settings), apiKey: '' };
         let config = mergeLegacyConfig(current, parsed, hasCurrentSettings);
-        let synchronizedSettings = { ...settings, apiKey };
+        let synchronizedSettings = { ...settings, apiKey: '' };
         if (!hasCurrentSettings) {
-          synchronizedSettings = settingsFromConfig(settings, config, apiKey);
-          config = { ...settingsToConfig(synchronizedSettings), apiKey };
+          synchronizedSettings = settingsFromConfig(settings, config, '');
+          config = { ...settingsToConfig(synchronizedSettings), apiKey: '' };
           try {
             await saveSettings(
               (key, value) => storage.setConfig(key, value),
@@ -410,40 +444,32 @@ export const useGameStore = create<GameState>((set, get) => {
             // Retry the migration on the next launch; keep both in-memory views consistent now.
           }
         }
-        const sanitizedConfig: Partial<AppConfig> = { ...config };
-        delete sanitizedConfig.apiKey;
-        const sanitized = JSON.stringify(sanitizedConfig);
-        if (hadLegacyApiKey || sanitized !== JSON.stringify(parsed)) {
+        if (hadLegacyApiKey || JSON.stringify(parsed) !== '{}') {
           try {
-            await storage.setConfig('app_config', sanitized);
+            await storage.setConfig('app_config', '{}');
           } catch {
             // In-memory normalization remains authoritative if cleanup cannot be persisted.
           }
         }
-        set({ config, settings: synchronizedSettings });
+        const [apiKey, apiKeyConfigured] = await readScopedKey(config);
+        config = { ...config, apiKey };
+        synchronizedSettings = { ...synchronizedSettings, apiKey };
+        set({ config, settings: synchronizedSettings, apiKeyConfigured });
       } else {
         // No stored config, derive from current settings
         const settings = get().settings;
-        const config = { ...settingsToConfig(settings), apiKey };
-        set({ config, settings: { ...settings, apiKey } });
+        const baseConfig = { ...settingsToConfig(settings), apiKey: '' };
+        const [apiKey, apiKeyConfigured] = await readScopedKey(baseConfig);
+        const config = { ...baseConfig, apiKey };
+        set({ config, settings: { ...settings, apiKey }, apiKeyConfigured });
       }
     } catch {
       // Derive from settings as fallback
       const settings = get().settings;
-      const config = { ...settingsToConfig(settings), apiKey };
-      set({ config, settings: { ...settings, apiKey } });
-    }
-  },
-
-  saveConfig: async () => {
-    const { config, storage } = get();
-    if (!config) return;
-    try {
-      await saveApiKey(config.apiKey);
-      const { apiKey, ...rest } = config;
-      await storage.setConfig('app_config', JSON.stringify(rest));
-    } catch (e) {
-      console.error('Failed to save config:', e);
+      const baseConfig = { ...settingsToConfig(settings), apiKey: '' };
+      const [apiKey, apiKeyConfigured] = await readScopedKey(baseConfig);
+      const config = { ...baseConfig, apiKey };
+      set({ config, settings: { ...settings, apiKey }, apiKeyConfigured });
     }
   },
 
@@ -471,34 +497,39 @@ export const useGameStore = create<GameState>((set, get) => {
 
   updateSettings: async (updates) => {
     const previousSettings = get().settings;
-    const previousConfig = get().config ?? settingsToConfig(previousSettings);
     const newSettings = normalizeSettingsForBuild({ ...previousSettings, ...updates });
     const newConfig = settingsToConfig(newSettings);
     const storage = get().storage;
-    let keyWriteCompleted = false;
+    let settingsWriteCompleted = false;
+    let nextApiKeyConfigured = get().apiKeyConfigured;
     try {
-      await saveApiKey(newConfig.apiKey);
-      keyWriteCompleted = true;
       await saveSettings((key, value) => storage.setConfig(key, value), newSettings);
-      const { apiKey: _, ...rest } = newConfig;
-      await storage.setConfig('app_config', JSON.stringify(rest));
+      settingsWriteCompleted = true;
+      await storage.setConfig('app_config', '{}');
+      if (newConfig.apiKey.trim()) {
+        await saveApiKey(
+          newConfig.apiKey.trim(),
+          newSettings.llmProvider,
+          newSettings.baseUrl
+        );
+        nextApiKeyConfigured = true;
+      } else if (providerSupportsApiKey(newSettings.llmProvider)) {
+        nextApiKeyConfigured = await isApiKeyConfigured(
+          newSettings.llmProvider,
+          newSettings.baseUrl
+        );
+      } else {
+        nextApiKeyConfigured = false;
+      }
     } catch (error) {
       const rollbackFailures: string[] = [];
-      if (keyWriteCompleted) {
+      if (settingsWriteCompleted) {
         try {
-          await saveApiKey(previousSettings.apiKey);
+          await saveSettings((key, value) => storage.setConfig(key, value), previousSettings);
         } catch (rollbackError) {
           rollbackFailures.push(rollbackError instanceof Error
             ? rollbackError.message : String(rollbackError));
         }
-      }
-      try {
-        await saveSettings((key, value) => storage.setConfig(key, value), previousSettings);
-        const { apiKey: _, ...rest } = previousConfig;
-        await storage.setConfig('app_config', JSON.stringify(rest));
-      } catch (rollbackError) {
-        rollbackFailures.push(rollbackError instanceof Error
-          ? rollbackError.message : String(rollbackError));
       }
       const message = error instanceof Error ? error.message : String(error);
       const rollbackNote = rollbackFailures.length > 0
@@ -507,7 +538,12 @@ export const useGameStore = create<GameState>((set, get) => {
       throw new Error(`保存设置失败：${message}${rollbackNote}`);
     }
 
-    set({ settings: newSettings, config: newConfig });
+    const memorySettings = isTauriRuntime() ? { ...newSettings, apiKey: '' } : newSettings;
+    set({
+      settings: memorySettings,
+      config: settingsToConfig(memorySettings),
+      apiKeyConfigured: nextApiKeyConfigured,
+    });
     get().engine.updateConfig({
       maxChoices: newSettings.maxChoices,
       maxAutoContinue: newSettings.maxAutoContinue,
@@ -518,6 +554,20 @@ export const useGameStore = create<GameState>((set, get) => {
       maxHistoryHardCap: newSettings.summaryThreshold * 3,
       llmMaxRetries: newSettings.llmMaxRetries,
     });
+  },
+
+  clearApiKey: async (scope) => {
+    const current = get().settings;
+    const target = scope ?? current;
+    await clearStoredApiKey(target.llmProvider, target.baseUrl);
+    if (apiKeyStorageScope(target.llmProvider, target.baseUrl)
+      === apiKeyStorageScope(current.llmProvider, current.baseUrl)) {
+      set((state) => ({
+        apiKeyConfigured: false,
+        settings: { ...state.settings, apiKey: '' },
+        config: state.config ? { ...state.config, apiKey: '' } : null,
+      }));
+    }
   },
 
   testLlmConnection: async (draft) => {
@@ -551,7 +601,7 @@ export const useGameStore = create<GameState>((set, get) => {
   startBasicGame: async (name, world, isBuiltIn, type) => {
     const { config, engine, isStreaming, isDataMutationInProgress } = get();
     if (!config) {
-      set({ error: '请先配置 LLM' });
+      set({ error: createAppError('invalid_config', '请先配置 LLM') });
       return;
     }
     if (isStreaming || isDataMutationInProgress) return;
@@ -633,7 +683,11 @@ export const useGameStore = create<GameState>((set, get) => {
       errorLogger.error('startBasicGame failed', { playerName: name, world }, err as Error);
       if (get().activeRequestId === requestId) {
         set({
-          error: formatErrorMessage(err, '开始游戏失败'),
+          error: appError(
+            err,
+            '开始游戏失败',
+            () => get().startBasicGame(name, world, isBuiltIn, type)
+          ),
           isStreaming: false,
           isQaStreaming: false,
           streamedText: '',
@@ -648,7 +702,7 @@ export const useGameStore = create<GameState>((set, get) => {
   generateSystemProposals: async (name, world, isBuiltIn, type) => {
     const { config, engine, isStreaming, isDataMutationInProgress } = get();
     if (!config) {
-      set({ error: '请先配置 LLM' });
+      set({ error: createAppError('invalid_config', '请先配置 LLM') });
       return;
     }
     if (isStreaming || isDataMutationInProgress) return;
@@ -696,7 +750,11 @@ export const useGameStore = create<GameState>((set, get) => {
     } catch (err) {
       if (get().activeRequestId === requestId) {
         set({
-          error: formatErrorMessage(err, '生成系统方案失败'),
+          error: appError(
+            err,
+            '生成系统方案失败',
+            () => get().generateSystemProposals(name, world, isBuiltIn, type)
+          ),
           isStreaming: false,
           isQaStreaming: false,
           streamedText: '',
@@ -804,11 +862,10 @@ export const useGameStore = create<GameState>((set, get) => {
     } catch (err) {
       if (get().activeRequestId === requestId) {
         set({
-          error: formatErrorMessage(err, '开始游戏失败'),
+          error: appError(err, '开始游戏失败', () => get().startSystemGame()),
           isStreaming: false,
           isQaStreaming: false,
           streamedText: '',
-          pendingStartParams: null,
           activeRequestId: null,
           activeRequestController: null,
         });
@@ -868,7 +925,7 @@ export const useGameStore = create<GameState>((set, get) => {
       errorLogger.error('makeChoice failed', { choiceId }, err as Error);
       if (get().activeRequestId === requestId) {
         set({
-          error: formatErrorMessage(err, '处理选择失败'),
+          error: appError(err, '处理选择失败', () => get().makeChoice(choiceId)),
           isStreaming: false,
           isQaStreaming: false,
           streamedText: '',
@@ -901,7 +958,16 @@ export const useGameStore = create<GameState>((set, get) => {
     try {
       const llmConfig = configToLlm(config);
       // Biography needs more output tokens (2000-4000 Chinese characters)
-      const bioLlmConfig = { ...llmConfig, maxTokens: 8192 };
+      const biographyCapability = resolveModelCapability(
+        config.provider ?? 'deepseek',
+        config.model,
+        llmConfig.contextWindow,
+        8192
+      );
+      const bioLlmConfig = {
+        ...llmConfig,
+        maxTokens: biographyCapability.reservedOutputTokens,
+      };
       const workingSession = JSON.parse(JSON.stringify(session)) as GameSession;
       await engine.generateBiography(
         workingSession,
@@ -915,6 +981,12 @@ export const useGameStore = create<GameState>((set, get) => {
         },
         requestController.signal
       );
+
+      workingSession.biographyGeneration = {
+        provider: config.provider ?? 'deepseek',
+        model: config.model,
+        generatedAt: new Date().toISOString(),
+      };
 
       if (get().activeRequestId !== requestId) return;
       await persistSession(workingSession);
@@ -932,7 +1004,7 @@ export const useGameStore = create<GameState>((set, get) => {
       errorLogger.error('generateBiography failed', { playerName: session.player.name }, err as Error);
       if (get().activeRequestId === requestId) {
         set({
-          error: formatErrorMessage(err, '生成传记失败'),
+          error: appError(err, '生成传记失败', () => get().generateBiography()),
           isStreaming: false,
           isQaStreaming: false,
           streamedText: '',
@@ -967,7 +1039,14 @@ export const useGameStore = create<GameState>((set, get) => {
           && get().session?.endReason === 'player_ended') {
           set({ session });
         }
-        set({ error: formatErrorMessage(err, '保存结束状态失败') });
+        set({
+          error: appError(
+            err,
+            '保存结束状态失败',
+            () => get().endGame(false),
+            'persistence'
+          ),
+        });
         throw err;
       }
     }
@@ -997,6 +1076,7 @@ export const useGameStore = create<GameState>((set, get) => {
       currentScenario: null,
       systemProposals: [],
       selectedSystem: null,
+      pendingStartParams: null,
       streamedText: '',
       isStreaming: false,
       isQaStreaming: false,
@@ -1026,7 +1106,12 @@ export const useGameStore = create<GameState>((set, get) => {
       set({
         resumeSessions: [],
         resumeWarning: null,
-        error: formatErrorMessage(err, '读取可恢复会话失败'),
+        error: appError(
+          err,
+          '读取可恢复会话失败',
+          () => get().checkResume(),
+          'persistence'
+        ),
       });
       if (options?.throwOnError) throw err;
     }
@@ -1073,161 +1158,15 @@ export const useGameStore = create<GameState>((set, get) => {
       }
     } catch (err) {
       errorLogger.error('resumeGame failed', { sessionId }, err as Error);
-      set({ error: formatErrorMessage(err, '恢复游戏失败') });
-    }
-  },
-
-  // Phase 9: Local model actions
-  refreshServerStatus: async () => {
-    try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      const status = await invoke('get_server_status') as ServerStatus;
-      set({ serverStatus: status });
-    } catch {
-      set({ serverStatus: { is_running: false, pid: null, port: null, model_name: null, context_size: null, gpu_layers: null } });
-    }
-  },
-
-  refreshAvailableModels: async () => {
-    try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      const models = await invoke('list_available_models') as ModelInfo[];
-      set({ availableModels: models });
-    } catch (e) {
-      console.error('Failed to load available models:', e);
-    }
-  },
-
-  refreshDownloadedModels: async () => {
-    try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      const models = await invoke('list_downloaded_models') as DownloadedModel[];
-      set({ downloadedModels: models });
-    } catch (e) {
-      console.error('Failed to load downloaded models:', e);
-    }
-  },
-
-  startLocalServer: async (modelPath: string, gpuLayers?: number, contextSize?: number) => {
-    set({ isLoading: true, loadingText: '正在启动本地模型服务...' });
-    try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      const info = await invoke('start_server', {
-        modelPath,
-        gpuLayers: gpuLayers ?? 0,
-        contextSize: contextSize ?? 4096,
-      }) as { port: number; model_name: string };
-
-      // Auto-configure LLM settings for local model
-      const modelName = info.model_name.replace(/\.gguf$/, '');
-      await get().updateSettings({
-        llmProvider: 'llamacpp_local',
-        baseUrl: `http://127.0.0.1:${info.port}`,
-        model: modelName,
-        apiKey: '',
-        timeout: 300000, // 5 min timeout for local model loading
-      });
-
-      await get().refreshServerStatus();
-      set({ isLoading: false, loadingText: '' });
-    } catch (err) {
       set({
-        error: formatErrorMessage(err, '启动本地模型服务失败'),
-        isLoading: false,
-        loadingText: '',
+        error: appError(
+          err,
+          '恢复游戏失败',
+          () => get().resumeGame(sessionId),
+          'persistence'
+        ),
       });
     }
-  },
-
-  stopLocalServer: async () => {
-    set({ isLoading: true, loadingText: '正在停止服务...' });
-    try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      await invoke('stop_server');
-      set({ serverStatus: null, isLoading: false, loadingText: '' });
-    } catch (err) {
-      set({
-        error: formatErrorMessage(err, '停止服务失败'),
-        isLoading: false,
-        loadingText: '',
-      });
-    }
-  },
-
-  startDownloadModel: async (modelId: string) => {
-    set({ downloadingModel: modelId, downloadProgress: 0 });
-    try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      const { listen } = await import('@tauri-apps/api/event');
-
-      // Listen for progress events
-      const unlistenProgress = await listen<{ model_id: string; progress: number }>(
-        'model_download_progress',
-        (event) => {
-          if (event.payload.model_id === modelId) {
-            set({ downloadProgress: event.payload.progress });
-          }
-        }
-      );
-
-      // Listen for completion events
-      const unlistenComplete = await listen<{ model_id: string; success: boolean; error?: string }>(
-        'model_download_complete',
-        async (event) => {
-          await unlistenProgress();
-          await unlistenComplete();
-          if (event.payload.success) {
-            set({ downloadingModel: null, downloadProgress: 0 });
-            await get().refreshDownloadedModels();
-          } else {
-            set({
-              downloadingModel: null,
-              downloadProgress: 0,
-              error: event.payload.error ?? '下载失败',
-            });
-          }
-        }
-      );
-
-      await invoke('download_model', { modelId });
-    } catch (err) {
-      set({
-        downloadingModel: null,
-        downloadProgress: 0,
-        error: formatErrorMessage(err, '下载模型失败'),
-      });
-    }
-  },
-
-  cancelDownloadModel: async () => {
-    try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      await invoke('cancel_download');
-      set({ downloadingModel: null, downloadProgress: 0 });
-    } catch (e) {
-      console.error('Failed to cancel download:', e);
-    }
-  },
-
-  deleteDownloadedModel: async (modelId: string) => {
-    set({ isLoading: true, loadingText: '正在删除模型...' });
-    try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      await invoke('delete_model', { modelId });
-      await get().refreshDownloadedModels();
-      set({ isLoading: false, loadingText: '' });
-    } catch (err) {
-      set({
-        error: formatErrorMessage(err, '删除模型失败'),
-        isLoading: false,
-        loadingText: '',
-      });
-    }
-  },
-
-  ensureBinary: async () => {
-    const { invoke } = await import('@tauri-apps/api/core');
-    return invoke('ensure_binary') as Promise<string>;
   },
 
   // QA actions
@@ -1329,7 +1268,7 @@ export const useGameStore = create<GameState>((set, get) => {
       if (get().activeRequestId === requestId) {
         set({
           session,
-          error: formatErrorMessage(err, '问答失败'),
+          error: appError(err, '问答失败', () => get().askQuestion(question)),
           streamedText: '',
           isStreaming: false,
           isQaStreaming: false,
@@ -1341,7 +1280,13 @@ export const useGameStore = create<GameState>((set, get) => {
   },
 
   // Utility actions
-  setError: (error) => set({ error }),
+  setError: (error) => set({
+    error: error === null
+      ? null
+      : typeof error === 'string'
+        ? createAppError('operation_failed', error)
+        : error,
+  }),
   setShowConfirmEnd: (show) => set({ showConfirmEnd: show }),
   setShowConfirmBio: (show) => set({ showConfirmBio: show }),
   appendStreamedText: (text) =>

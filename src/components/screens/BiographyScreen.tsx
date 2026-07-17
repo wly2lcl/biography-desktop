@@ -1,7 +1,10 @@
-import { useCallback } from 'react';
 import { useGameStore } from '@/store/gameStore';
 import StreamedText from '@/components/common/StreamedText';
 import { t } from '@/i18n';
+import {
+  downloadBiography,
+  printBiographyAsPdf,
+} from '@/services/biographyExport';
 
 export default function BiographyScreen() {
   const {
@@ -11,6 +14,8 @@ export default function BiographyScreen() {
     newGame,
     setShowSettings,
     setShowWorldManager,
+    settings,
+    setError,
   } = useGameStore();
 
   // ── Guard ──────────────────────────────────────────
@@ -29,20 +34,19 @@ export default function BiographyScreen() {
   const hasContent = !!session.biography || streamedText.length > 0;
 
   // ── Download handler ───────────────────────────────
-  const handleDownload = useCallback(() => {
+  const handleDownload = (format: 'txt' | 'md') => {
     const content = session.biography || streamedText;
     if (!content) return;
+    downloadBiography(session, content, settings, format);
+  };
 
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `${session.player.name}传记.txt`;
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
-    URL.revokeObjectURL(url);
-  }, [session.biography, session.player.name, streamedText]);
+  const handlePdf = () => {
+    const content = session.biography || streamedText;
+    if (!content) return;
+    if (!printBiographyAsPdf(session, content, settings)) {
+      setError('浏览器阻止了打印窗口，请允许弹出窗口后重试');
+    }
+  };
 
   return (
     <div className="w-full h-full flex items-start justify-center bg-dark-950 overflow-y-auto py-8">
@@ -102,11 +106,27 @@ export default function BiographyScreen() {
         <div className="flex justify-center gap-4 shrink-0 pb-4">
           <button
             type="button"
-            onClick={handleDownload}
+            onClick={() => handleDownload('txt')}
             disabled={!hasContent}
             className="btn-primary min-w-[130px] text-sm"
           >
-            {t('screens.biography.download')}
+            {t('screens.biography.download')} TXT
+          </button>
+          <button
+            type="button"
+            onClick={() => handleDownload('md')}
+            disabled={!hasContent}
+            className="btn-secondary min-w-[130px] text-sm"
+          >
+            下载 Markdown
+          </button>
+          <button
+            type="button"
+            onClick={handlePdf}
+            disabled={!hasContent}
+            className="btn-secondary min-w-[130px] text-sm"
+          >
+            打印 / PDF
           </button>
           {!isStreaming && (
             <button

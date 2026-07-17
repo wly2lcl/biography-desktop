@@ -41,6 +41,12 @@ jobs:
         run: node scripts/verify-build-configs.mjs
       - name: TypeScript production build
         run: npm run build
+      - name: Stable frontend provider boundary
+        run: npm run verify:stable-bundle
+      - name: Experimental frontend build
+        env:
+          VITE_ENABLE_EXPERIMENTAL_PROVIDERS: 'true'
+        run: npm run build:experimental
       - name: Unit and integration tests
         run: npm test
       - name: Coverage gate
@@ -49,8 +55,12 @@ jobs:
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
       - name: Rust Clippy
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - name: Rust Clippy with local-model
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --features local-model -- -D warnings
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Rust tests with local-model
+        run: cargo test --manifest-path src-tauri/Cargo.toml --features local-model
 
   desktop-build:
     needs: quality

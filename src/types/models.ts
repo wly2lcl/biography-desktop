@@ -50,6 +50,12 @@ export interface WorldRef {
   type: 'single' | 'directory';
 }
 
+export interface BiographyGenerationMetadata {
+  provider: LlmProvider;
+  model: string;
+  generatedAt: string;
+}
+
 export interface GameSession {
   schemaVersion: SessionSchemaVersion;
   sessionId: string;
@@ -63,6 +69,7 @@ export interface GameSession {
   isActive: boolean;
   endReason?: EndReason;
   biography?: string;
+  biographyGeneration?: BiographyGenerationMetadata;
   createdAt: string;
 }
 
@@ -106,6 +113,7 @@ export interface AppConfig {
   model: string;
   temperature: number;
   maxTokens: number;
+  contextWindow?: number;
   timeout: number;
 }
 

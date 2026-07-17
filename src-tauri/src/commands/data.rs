@@ -1,5 +1,6 @@
 // src-tauri/src/commands/data.rs - Data management commands
 
+use crate::db::DATABASE_SCHEMA_VERSION;
 use crate::AppDb;
 use serde_json::json;
 use serde_json::Value;
@@ -74,7 +75,7 @@ async fn restore_from_snapshot(pool: &SqlitePool, source: &std::path::Path) -> R
         .fetch_one(&backup_pool)
         .await
         .map_err(|e| format!("Cannot read backup version: {e}"))?;
-    if version != 2 {
+    if version != 2 && version != DATABASE_SCHEMA_VERSION {
         return Err(format!("Unsupported backup schema version: {version}"));
     }
     backup_pool.close().await;
@@ -92,16 +93,24 @@ async fn restore_from_snapshot(pool: &SqlitePool, source: &std::path::Path) -> R
             .execute(&mut *tx)
             .await
             .map_err(|e| e.to_string())?;
-        sqlx::query(
+        let biography_generation = if version >= 3 {
+            "biography_generation"
+        } else {
+            "NULL"
+        };
+        let restore_query = format!(
             "INSERT INTO sessions
              (session_id, schema_version, world, world_source, world_type, game_mode, system,
               player_name, player_history, player_attributes, player_inventory, player_summary,
-              player_qa_history, scenarios_json, is_active, end_reason, biography, created_at, updated_at)
+              player_qa_history, scenarios_json, is_active, end_reason, biography,
+              biography_generation, created_at, updated_at)
              SELECT session_id, schema_version, world, world_source, world_type, game_mode, system,
                     player_name, player_history, player_attributes, player_inventory, player_summary,
-                    player_qa_history, scenarios_json, is_active, end_reason, biography, created_at, updated_at
-             FROM restore_db.sessions",
-        )
+                    player_qa_history, scenarios_json, is_active, end_reason, biography,
+                    {biography_generation}, created_at, updated_at
+             FROM restore_db.sessions"
+        );
+        sqlx::query(&restore_query)
         .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
@@ -273,16 +282,15 @@ pub async fn clear_all_sessions(state: State<'_, AppDb>) -> Result<i64, String> 
     Ok(result.rows_affected() as i64)
 }
 
-#[tauri::command]
-pub async fn export_full_data(state: State<'_, AppDb>) -> Result<String, String> {
+async fn export_full_data_from_pool(pool: &SqlitePool) -> Result<String, String> {
     let rows = sqlx::query(
         "SELECT session_id, schema_version, world, world_source, world_type, game_mode, system, player_name,
                 player_history, player_attributes, player_inventory,
                 player_summary, player_qa_history, scenarios_json,
-                is_active, end_reason, biography, created_at
+                is_active, end_reason, biography, biography_generation, created_at
          FROM sessions",
     )
-    .fetch_all(&state.pool)
+    .fetch_all(pool)
     .await
     .map_err(|e| e.to_string())?;
 
@@ -306,6 +314,7 @@ pub async fn export_full_data(state: State<'_, AppDb>) -> Result<String, String>
             let is_active: bool = row.get("is_active");
             let end_reason: Option<String> = row.get("end_reason");
             let biography: Option<String> = row.get("biography");
+            let biography_generation: Option<String> = row.get("biography_generation");
             let created_at: String = row.get("created_at");
             let history: Value = serde_json::from_str(&player_history)
                 .map_err(|e| format!("Corrupted player_history: {e}"))?;
@@ -317,6 +326,12 @@ pub async fn export_full_data(state: State<'_, AppDb>) -> Result<String, String>
                 .map_err(|e| format!("Corrupted player_qa_history: {e}"))?;
             let scenarios: Value = serde_json::from_str(&scenarios_json)
                 .map_err(|e| format!("Corrupted scenarios_json: {e}"))?;
+            let biography_generation = biography_generation
+                .map(|raw| {
+                    serde_json::from_str::<Value>(&raw)
+                        .map_err(|e| format!("Corrupted biography_generation: {e}"))
+                })
+                .transpose()?;
 
             Ok(json!({
                 "sessionId": session_id,
@@ -338,6 +353,7 @@ pub async fn export_full_data(state: State<'_, AppDb>) -> Result<String, String>
                 "isActive": is_active,
                 "endReason": end_reason,
                 "biography": biography,
+                "biographyGeneration": biography_generation,
                 "createdAt": created_at,
             }))
         })
@@ -351,6 +367,11 @@ pub async fn export_full_data(state: State<'_, AppDb>) -> Result<String, String>
     });
 
     serde_json::to_string_pretty(&export_data).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn export_full_data(state: State<'_, AppDb>) -> Result<String, String> {
+    export_full_data_from_pool(&state.pool).await
 }
 
 async fn import_full_data_into_pool(pool: &SqlitePool, data: &str) -> Result<usize, String> {
@@ -535,6 +556,26 @@ async fn import_full_data_into_pool(pool: &SqlitePool, data: &str) -> Result<usi
             Some(Value::String(value)) => Some(value.as_str()),
             _ => return Err(format!("{entry} biography must be a string")),
         };
+        let biography_generation = match session.get("biographyGeneration") {
+            None | Some(Value::Null) => None,
+            Some(Value::Object(value)) => {
+                let provider = value.get("provider").and_then(Value::as_str);
+                let model = value.get("model").and_then(Value::as_str);
+                let generated_at = value.get("generatedAt").and_then(Value::as_str);
+                if !provider.is_some_and(|provider| {
+                    matches!(
+                        provider,
+                        "deepseek" | "openai" | "ollama" | "llamacpp" | "llamacpp_local" | "custom"
+                    )
+                }) || !model.is_some_and(|model| !model.is_empty())
+                    || !generated_at.is_some_and(|generated_at| !generated_at.is_empty())
+                {
+                    return Err(format!("{entry} has invalid biographyGeneration metadata"));
+                }
+                Some(Value::Object(value.clone()).to_string())
+            }
+            _ => return Err(format!("{entry} biographyGeneration must be an object")),
+        };
         let created_at = match session.get("createdAt") {
             None => None,
             Some(Value::String(value)) if !value.is_empty() => Some(value.as_str()),
@@ -546,8 +587,8 @@ async fn import_full_data_into_pool(pool: &SqlitePool, data: &str) -> Result<usi
              (session_id, schema_version, world, world_source, world_type, game_mode, system, player_name,
               player_history, player_attributes, player_inventory,
               player_summary, player_qa_history, scenarios_json,
-              is_active, end_reason, biography, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), datetime('now'))
+              is_active, end_reason, biography, biography_generation, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), datetime('now'))
              ON CONFLICT(session_id) DO UPDATE SET
               schema_version=excluded.schema_version, world=excluded.world,
               world_source=excluded.world_source, world_type=excluded.world_type,
@@ -556,7 +597,8 @@ async fn import_full_data_into_pool(pool: &SqlitePool, data: &str) -> Result<usi
               player_inventory=excluded.player_inventory, player_summary=excluded.player_summary,
               player_qa_history=excluded.player_qa_history, scenarios_json=excluded.scenarios_json,
               is_active=excluded.is_active, end_reason=excluded.end_reason,
-              biography=excluded.biography, updated_at=datetime('now')",
+              biography=excluded.biography, biography_generation=excluded.biography_generation,
+              updated_at=datetime('now')",
         )
         .bind(session_id)
         .bind(schema_version)
@@ -575,6 +617,7 @@ async fn import_full_data_into_pool(pool: &SqlitePool, data: &str) -> Result<usi
         .bind(if is_active { 1 } else { 0 })
         .bind(end_reason)
         .bind(biography)
+        .bind(biography_generation)
         .bind(created_at)
         .execute(&mut *tx)
         .await
@@ -678,8 +721,11 @@ mod tests {
         let pool = file_pool(&live_path).await;
         init_db(&pool).await.unwrap();
         sqlx::query(
-            "INSERT INTO sessions (session_id, world, player_name) VALUES ('one', 'before', '角色')",
+            "INSERT INTO sessions
+             (session_id, world, player_name, biography_generation)
+             VALUES ('one', 'before', '角色', ?)",
         )
+        .bind(r#"{"provider":"openai","model":"gpt-4o-mini","generatedAt":"2026-01-01T00:00:00Z"}"#)
         .execute(&pool)
         .await
         .unwrap();
@@ -705,10 +751,12 @@ mod tests {
             .unwrap();
         assert_eq!(integrity, "ok");
 
-        sqlx::query("UPDATE sessions SET world='after' WHERE session_id='one'")
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "UPDATE sessions SET world='after', biography_generation=NULL WHERE session_id='one'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         sqlx::query("UPDATE config SET value=? WHERE key='app_config'")
             .bind(r#"{"provider":"deepseek","model":"deepseek-chat"}"#)
             .execute(&pool)
@@ -729,6 +777,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(world, "before");
+        let biography_generation: String =
+            sqlx::query_scalar("SELECT biography_generation FROM sessions WHERE session_id='one'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(biography_generation.contains("gpt-4o-mini"));
         let restored_config: String =
             sqlx::query_scalar("SELECT value FROM config WHERE key='app_config'")
                 .fetch_one(&pool)
@@ -751,6 +805,55 @@ mod tests {
                 .unwrap();
         assert_eq!(restored_theme, "current-theme");
         pool.close().await;
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_schema_v2_backup_restores_with_empty_biography_metadata() {
+        let dir = std::env::temp_dir().join(format!("bio_v2_restore_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let live_path = dir.join("live.db");
+        let backup_path = dir.join("v2.db");
+        let live_pool = file_pool(&live_path).await;
+        init_db(&live_pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO sessions (session_id, world, player_name, biography_generation)
+             VALUES ('live', 'current', '角色', '{}')",
+        )
+        .execute(&live_pool)
+        .await
+        .unwrap();
+
+        let backup_pool = file_pool(&backup_path).await;
+        init_db(&backup_pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO sessions (session_id, world, player_name)
+             VALUES ('backup', 'restored', '旧角色')",
+        )
+        .execute(&backup_pool)
+        .await
+        .unwrap();
+        sqlx::query("ALTER TABLE sessions DROP COLUMN biography_generation")
+            .execute(&backup_pool)
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA user_version = 2")
+            .execute(&backup_pool)
+            .await
+            .unwrap();
+        backup_pool.close().await;
+
+        restore_from_snapshot(&live_pool, &backup_path)
+            .await
+            .unwrap();
+        let restored: (String, Option<String>) = sqlx::query_as(
+            "SELECT world, biography_generation FROM sessions WHERE session_id='backup'",
+        )
+        .fetch_one(&live_pool)
+        .await
+        .unwrap();
+        assert_eq!(restored, ("restored".to_string(), None));
+        live_pool.close().await;
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -872,20 +975,36 @@ mod tests {
                 }],
                 "isActive": true,
                 "endReason": null,
-                "biography": null
+                "biography": "旧传记",
+                "biographyGeneration": {
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "generatedAt": "2026-01-01T00:00:00Z"
+                }
             }]
         })
         .to_string();
 
         assert_eq!(import_full_data_into_pool(&pool, &data).await.unwrap(), 1);
-        let metadata: (i64, String, String) = sqlx::query_as(
-            "SELECT schema_version, world_source, world_type FROM sessions WHERE session_id = ?",
+        let metadata: (i64, String, String, String) = sqlx::query_as(
+            "SELECT schema_version, world_source, world_type, biography_generation
+             FROM sessions WHERE session_id = ?",
         )
         .bind("legacy-import")
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(metadata, (1, "builtin".to_string(), "single".to_string()));
+        assert_eq!(metadata.0, 1);
+        assert_eq!(metadata.1, "builtin");
+        assert_eq!(metadata.2, "single");
+        assert!(metadata.3.contains("gpt-4o-mini"));
+
+        let exported: Value =
+            serde_json::from_str(&export_full_data_from_pool(&pool).await.unwrap()).unwrap();
+        assert_eq!(
+            exported["sessions"][0]["biographyGeneration"]["model"],
+            "gpt-4o-mini"
+        );
     }
 
     #[tokio::test]

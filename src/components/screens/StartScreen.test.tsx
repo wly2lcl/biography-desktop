@@ -35,6 +35,7 @@ describe('StartScreen world selection', () => {
       resumeWarning: '已跳过 1 个损坏会话（broken-session），其他旅程仍可继续。',
       error: null,
       isLoading: false,
+      apiKeyConfigured: true,
       config: {
         provider: 'deepseek',
         apiKey: 'key',

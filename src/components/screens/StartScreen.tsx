@@ -19,6 +19,8 @@ export default function StartScreen() {
     error,
     config,
     settings,
+    apiKeyConfigured,
+    setScreen,
     setShowWorldManager,
     setShowSettings,
     startBasicGame,
@@ -63,7 +65,7 @@ export default function StartScreen() {
 
   const selectedEntry = worlds.find((world) => worldSelectionId(world) === selectedWorld);
   const providerReady = !!config
-    && (!providerRequiresApiKey(settings.llmProvider) || !!config.apiKey)
+    && (!providerRequiresApiKey(settings.llmProvider) || apiKeyConfigured)
     && (!providerRequiresCloudConsent(settings.llmProvider)
       || settings.cloudPrivacyAcknowledged);
   const canStart =
@@ -154,12 +156,34 @@ export default function StartScreen() {
               </svg>
               <div className="flex-1">
                 <h4 className="text-sm font-medium text-blue-300 mb-1">欢迎使用传记生成器</h4>
-                <p className="text-sm text-gray-300 mb-2">
+                <p className="text-sm text-gray-300 mb-3">
                   会话保存在您的设备上；生成内容时，角色名、世界观、剧情和提问会发送给所选云端模型服务商。
                 </p>
-                <p className="text-xs text-gray-400">
-                  稳定版支持 DeepSeek 与 OpenAI。请先在<strong>设置</strong>中阅读隐私说明并配置 API Key。
-                </p>
+                <ol className="text-xs text-gray-400 space-y-1 mb-3 list-decimal list-inside">
+                  <li>选择 DeepSeek 或 OpenAI</li>
+                  <li>填写 API Key，测试连接并确认隐私说明</li>
+                  <li>选择示例世界，开始第一段旅程</li>
+                </ol>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="btn-primary text-xs py-1.5"
+                    onClick={() => setShowSettings(true)}
+                  >
+                    开始配置
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-secondary text-xs py-1.5"
+                    onClick={() => {
+                      localStorage.setItem('bio_has_seen_onboarding', '1');
+                      setShowOnboarding(false);
+                      setScreen('demo');
+                    }}
+                  >
+                    先体验离线示例
+                  </button>
+                </div>
               </div>
               <button
                 onClick={() => {
@@ -273,13 +297,27 @@ export default function StartScreen() {
           开始旅程
         </button>
 
+        {!providerReady && (
+          <button
+            type="button"
+            onClick={() => {
+              localStorage.setItem('bio_has_seen_onboarding', '1');
+              setShowOnboarding(false);
+              setScreen('demo');
+            }}
+            className="btn-secondary w-full text-sm mt-3"
+          >
+            无需 API Key，先体验离线示例
+          </button>
+        )}
+
         {/* ── Error message ─────────────────────────── */}
         {error && (
           <div
             className="mt-4 p-3 bg-red-900/30 border border-red-500/30 rounded-lg animate-slide-up"
             role="alert"
           >
-            <p className="text-red-400 text-sm">{error}</p>
+            <p className="text-red-400 text-sm">{error.message}</p>
           </div>
         )}
 

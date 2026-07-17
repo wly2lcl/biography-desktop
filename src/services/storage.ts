@@ -45,6 +45,10 @@ const END_REASONS = new Set([
   'max_history',
 ]);
 
+const LLM_PROVIDERS = new Set([
+  'deepseek', 'openai', 'ollama', 'llamacpp', 'llamacpp_local', 'custom',
+]);
+
 export async function normalizeSession(value: unknown): Promise<GameSession> {
   if (!isRecord(value)) throw new SessionCorruptedError('根对象不是对象');
   if (typeof value.sessionId !== 'string' || !value.sessionId) {
@@ -93,6 +97,16 @@ export async function normalizeSession(value: unknown): Promise<GameSession> {
     || (value.biography !== undefined && value.biography !== null
       && typeof value.biography !== 'string')) {
     throw new SessionCorruptedError('会话时间、系统设定或传记格式无效');
+  }
+  if (value.biographyGeneration !== undefined && value.biographyGeneration !== null
+    && (!isRecord(value.biographyGeneration)
+      || typeof value.biographyGeneration.provider !== 'string'
+      || !LLM_PROVIDERS.has(value.biographyGeneration.provider)
+      || typeof value.biographyGeneration.model !== 'string'
+      || !value.biographyGeneration.model
+      || typeof value.biographyGeneration.generatedAt !== 'string'
+      || !value.biographyGeneration.generatedAt)) {
+    throw new SessionCorruptedError('传记生成元数据无效');
   }
 
   if (value.schemaVersion !== undefined
@@ -144,6 +158,9 @@ export async function normalizeSession(value: unknown): Promise<GameSession> {
       ? value.endReason as GameSession['endReason']
       : undefined,
     biography: typeof value.biography === 'string' ? value.biography : undefined,
+    biographyGeneration: isRecord(value.biographyGeneration)
+      ? value.biographyGeneration as unknown as GameSession['biographyGeneration']
+      : undefined,
     player: {
       ...player,
       currentScenario,

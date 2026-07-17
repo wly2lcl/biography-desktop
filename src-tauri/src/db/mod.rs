@@ -4,13 +4,15 @@ pub mod migrations;
 
 use sqlx::SqlitePool;
 
+pub const DATABASE_SCHEMA_VERSION: i64 = 3;
+
 pub async fn init_db(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     let version: i64 = sqlx::query_scalar("PRAGMA user_version")
         .fetch_one(pool)
         .await?;
-    if version > 2 {
+    if version > DATABASE_SCHEMA_VERSION {
         return Err(sqlx::Error::Protocol(format!(
-            "database schema version {version} is newer than supported version 2"
+            "database schema version {version} is newer than supported version {DATABASE_SCHEMA_VERSION}"
         )));
     }
 
@@ -35,6 +37,7 @@ pub async fn init_db(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             is_active       INTEGER NOT NULL DEFAULT 1,
             end_reason      TEXT,
             biography       TEXT,
+            biography_generation JSON,
             created_at      TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
         )",
@@ -75,6 +78,23 @@ pub async fn init_db(pool: &SqlitePool) -> Result<(), sqlx::Error> {
                 .await?;
         }
         sqlx::query("PRAGMA user_version = 2")
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+    }
+
+    if version < 3 {
+        let columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info('sessions')")
+                .fetch_all(pool)
+                .await?;
+        let mut tx = pool.begin().await?;
+        if !columns.iter().any(|name| name == "biography_generation") {
+            sqlx::query("ALTER TABLE sessions ADD COLUMN biography_generation JSON")
+                .execute(&mut *tx)
+                .await?;
+        }
+        sqlx::query("PRAGMA user_version = 3")
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
@@ -148,7 +168,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fresh_database_uses_schema_v2() {
+    async fn fresh_database_uses_schema_v3() {
         let pool = memory_pool().await;
         init_db(&pool).await.unwrap();
         let version: i64 = sqlx::query_scalar("PRAGMA user_version")
@@ -160,10 +180,46 @@ mod tests {
                 .fetch_all(&pool)
                 .await
                 .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
         assert!(columns.contains(&"world_source".to_string()));
         assert!(columns.contains(&"world_type".to_string()));
         assert!(columns.contains(&"end_reason".to_string()));
+        assert!(columns.contains(&"biography_generation".to_string()));
+    }
+
+    #[tokio::test]
+    async fn schema_v2_is_migrated_to_v3_without_losing_sessions() {
+        let pool = memory_pool().await;
+        init_db(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO sessions (session_id, world, player_name) VALUES ('v2', 'world', '角色')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("ALTER TABLE sessions DROP COLUMN biography_generation")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA user_version = 2")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        init_db(&pool).await.unwrap();
+
+        let version: i64 = sqlx::query_scalar("PRAGMA user_version")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let session_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sessions WHERE session_id = 'v2' AND biography_generation IS NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(version, 3);
+        assert_eq!(session_count, 1);
     }
 
     #[tokio::test]
@@ -217,13 +273,13 @@ mod tests {
     #[tokio::test]
     async fn rejects_future_database_versions() {
         let pool = memory_pool().await;
-        sqlx::query("PRAGMA user_version = 3")
+        sqlx::query("PRAGMA user_version = 4")
             .execute(&pool)
             .await
             .unwrap();
 
         let error = init_db(&pool).await.unwrap_err();
-        assert!(error.to_string().contains("newer than supported version 2"));
+        assert!(error.to_string().contains("newer than supported version 3"));
         let table_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sessions'",
         )

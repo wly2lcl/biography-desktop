@@ -14,6 +14,7 @@ export interface AppSettings {
   model: string;
   temperature: number;
   maxTokens: number;
+  contextWindow: number;
   timeout: number;
   cloudPrivacyAcknowledged: boolean;
 
@@ -38,6 +39,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   model: 'deepseek-chat',
   temperature: 0.8,
   maxTokens: 4096,
+  contextWindow: 65536,
   timeout: 120000,
   cloudPrivacyAcknowledged: false,
   maxChoices: 30,

@@ -6,12 +6,14 @@ import type {
   SystemProposal,
 } from '../types/models';
 import { SESSION_SCHEMA_VERSION } from '../types/models';
-import { LLMError, streamChatText, type LLMConfig } from '../services/llm';
+import { LLMError, type LLMConfig } from '../services/llm';
 import { parseLLMJSON } from '../services/parser';
 import { prompts } from '../services/prompts';
 import { withRetry } from '../services/retry';
-import { getWorldContext } from '../services/world';
 import { generateId } from '../utils/format';
+import { fitPromptToContext } from '../services/contextBudget';
+import type { GameEngineDependencies } from '../infrastructure/contracts';
+import { defaultGameEngineDependencies } from '../infrastructure/defaults';
 
 export interface GameEngineConfig {
   maxChoices: number;
@@ -37,9 +39,14 @@ const DEFAULT_ENGINE_CONFIG: GameEngineConfig = {
 
 export class GameEngine {
   private config: GameEngineConfig;
+  private readonly dependencies: GameEngineDependencies;
 
-  constructor(config: Partial<GameEngineConfig> = {}) {
+  constructor(
+    config: Partial<GameEngineConfig> = {},
+    dependencies: GameEngineDependencies = defaultGameEngineDependencies
+  ) {
     this.config = { ...DEFAULT_ENGINE_CONFIG, ...config };
+    this.dependencies = dependencies;
   }
 
   updateConfig(config: Partial<GameEngineConfig>): void {
@@ -52,6 +59,22 @@ export class GameEngine {
       : DEFAULT_ENGINE_CONFIG.llmMaxRetries;
     const attempts = retries + 1;
     return Math.min(cap, attempts);
+  }
+
+  private fitPrompt(prompt: string, llmConfig: LLMConfig): string {
+    const contextWindowTokens = llmConfig.contextWindow ?? 65536;
+    const fitted = fitPromptToContext(prompt, {
+      contextWindowTokens,
+      reservedOutputTokens: llmConfig.maxTokens,
+      safetyMarginTokens: Math.max(1024, Math.floor(contextWindowTokens * 0.05)),
+    });
+    if (!fitted.text) {
+      throw new LLMError(
+        'context_overflow',
+        '模型上下文窗口不足以容纳输出预留和最小输入内容'
+      );
+    }
+    return fitted.text;
   }
 
   /**
@@ -73,7 +96,7 @@ export class GameEngine {
       source: isBuiltIn ? 'builtin' as const : 'user' as const,
       type: worldType,
     };
-    const worldContext = await getWorldContext(worldRef);
+    const worldContext = await this.dependencies.worlds.getContext(worldRef);
 
     const session: GameSession = {
       schemaVersion: SESSION_SCHEMA_VERSION,
@@ -98,14 +121,14 @@ export class GameEngine {
     };
 
     const sysCtx = this.loadSystemContext(session);
-    const introPrompt = prompts.format(prompts.introductionPrompt(), {
+    const introPrompt = this.fitPrompt(prompts.format(prompts.introductionPrompt(), {
       world_context: worldContext,
       system_context: sysCtx,
       player_name: playerName,
-    });
+    }), llmConfig);
 
     const fullText = await withRetry(
-      () => streamChatText(
+      () => this.dependencies.llm.streamText(
         [{ role: 'user', content: introPrompt }],
         llmConfig,
         onToken,
@@ -159,19 +182,19 @@ export class GameEngine {
     onToken?: (token: string) => void,
     signal?: AbortSignal
   ): Promise<SystemProposal[]> {
-    const worldContext = await getWorldContext({
+    const worldContext = await this.dependencies.worlds.getContext({
       name: worldName,
       source: isBuiltIn ? 'builtin' : 'user',
       type: worldType,
     });
 
-    const sysPrompt = prompts.format(prompts.systemGenerationPrompt(), {
+    const sysPrompt = this.fitPrompt(prompts.format(prompts.systemGenerationPrompt(), {
       world_context: worldContext,
       player_name: playerName,
-    });
+    }), llmConfig);
 
     const fullText = await withRetry(
-      () => streamChatText(
+      () => this.dependencies.llm.streamText(
         [{ role: 'user', content: sysPrompt }],
         llmConfig,
         onToken,
@@ -244,7 +267,7 @@ export class GameEngine {
     onToken?: (token: string) => void,
     signal?: AbortSignal
   ): Promise<string> {
-    const worldContext = await getWorldContext(session.worldRef);
+    const worldContext = await this.dependencies.worlds.getContext(session.worldRef);
     const isComplete = session.endReason === 'story_ending'
       || session.endReason === 'max_choices'
       || session.endReason === 'max_history'
@@ -256,15 +279,15 @@ export class GameEngine {
       isComplete
     );
 
-    const bioPrompt = prompts.format(prompts.biographyPrompt(isComplete), {
+    const bioPrompt = this.fitPrompt(prompts.format(prompts.biographyPrompt(isComplete), {
       world_context: worldThemes,
       system_context: this.loadSystemContext(session),
       player_name: session.player.name,
       player_history: historyText,
-    });
+    }), llmConfig);
 
     const biography = await withRetry(
-      () => streamChatText(
+      () => this.dependencies.llm.streamText(
         [{ role: 'user', content: bioPrompt }],
         llmConfig,
         onToken,
@@ -288,11 +311,11 @@ export class GameEngine {
     onToken?: (token: string) => void,
     signal?: AbortSignal
   ): Promise<string> {
-    const worldContext = await getWorldContext(session.worldRef);
+    const worldContext = await this.dependencies.worlds.getContext(session.worldRef);
     const historyText = prompts.formatHistory(session.player.history, session.player.summary);
     const qaHistoryContext = prompts.formatQaHistory(session.player.qaHistory);
 
-    const qaPrompt = prompts.format(prompts.qaPrompt(), {
+    const qaPrompt = this.fitPrompt(prompts.format(prompts.qaPrompt(), {
       world_context: worldContext,
       system_context: this.loadSystemContext(session),
       player_name: session.player.name,
@@ -304,10 +327,10 @@ export class GameEngine {
       player_history: historyText,
       qa_history_context: qaHistoryContext,
       question,
-    });
+    }), llmConfig);
 
     return await withRetry(
-      () => streamChatText(
+      () => this.dependencies.llm.streamText(
         [{ role: 'user', content: qaPrompt }],
         llmConfig,
         onToken,
@@ -358,19 +381,19 @@ export class GameEngine {
       return this.endingScenario('legend');
     }
 
-    const worldContext = await getWorldContext(session.worldRef);
+    const worldContext = await this.dependencies.worlds.getContext(session.worldRef);
 
-    const scenarioPromptText = prompts.format(prompts.scenarioPrompt(), {
+    const scenarioPromptText = this.fitPrompt(prompts.format(prompts.scenarioPrompt(), {
       world_context: worldContext,
       system_context: this.loadSystemContext(session),
       player_name: session.player.name,
       summary: prompts.formatSummaryOnly(session.player.history, session.player.summary),
       latest_scene: prompts.formatLatestScene(session.player.history),
       previous_choice: this.getPreviousChoice(session),
-    });
+    }), llmConfig);
 
     const fullText = await withRetry(
-      () => streamChatText(
+      () => this.dependencies.llm.streamText(
         [{ role: 'user', content: scenarioPromptText }],
         llmConfig,
         onToken,
@@ -500,13 +523,13 @@ export class GameEngine {
 
     try {
       const summary = await withRetry(
-        () => streamChatText(
+        () => this.dependencies.llm.streamText(
           [{
             role: 'user',
-            content: prompts.format(prompts.summarizationPrompt(), {
+            content: this.fitPrompt(prompts.format(prompts.summarizationPrompt(), {
               existing_summary: session.player.summary,
               new_events: prompts.formatHistory(toSummarize),
-            }),
+            }), { ...llmConfig, maxTokens: 1024 }),
           }],
           { ...llmConfig, temperature: 0, maxTokens: 1024 },
           undefined,

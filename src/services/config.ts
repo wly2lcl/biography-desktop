@@ -5,9 +5,15 @@ import type { LlmProvider } from '../types/settings';
 import { DEFAULT_SETTINGS } from '../types/settings';
 import {
   OFFICIAL_PROVIDER_BASE_URLS,
-  streamChatText,
 } from './llm';
 import { isTauriRuntime } from './runtime';
+import { runtimeLlmGateway } from '../infrastructure/defaults';
+import {
+  loadWebApiKey,
+  saveWebApiKey,
+} from './webApiKeyStore';
+
+export { apiKeyStorageScope } from './webApiKeyStore';
 
 export const EXPERIMENTAL_PROVIDERS_ENABLED =
   import.meta.env.VITE_ENABLE_EXPERIMENTAL_PROVIDERS === 'true';
@@ -41,6 +47,10 @@ const ALL_PROVIDERS: ReadonlySet<AppSettings['llmProvider']> = new Set([
 
 export function providerRequiresApiKey(provider: AppSettings['llmProvider']): boolean {
   return provider === 'deepseek' || provider === 'openai';
+}
+
+export function providerSupportsApiKey(provider: AppSettings['llmProvider']): boolean {
+  return !LOCAL_PROVIDERS.has(provider);
 }
 
 export function providerRequiresCloudConsent(provider: AppSettings['llmProvider']): boolean {
@@ -91,6 +101,11 @@ export function normalizeSettingsForBuild(settings: AppSettings): AppSettings {
     integer(settings.summaryKeepLatest, DEFAULT_SETTINGS.summaryKeepLatest, 1),
     summaryThreshold - 1
   );
+  const maxTokens = integer(settings.maxTokens, DEFAULT_SETTINGS.maxTokens, 1);
+  const contextWindow = Math.max(
+    integer(settings.contextWindow, DEFAULT_SETTINGS.contextWindow, 4096),
+    maxTokens + 2048
+  );
   const sanitized: AppSettings = {
     ...settings,
     llmProvider: provider,
@@ -102,7 +117,8 @@ export function normalizeSettingsForBuild(settings: AppSettings): AppSettings {
     temperature: Math.min(2, finiteNumber(
       settings.temperature, DEFAULT_SETTINGS.temperature, 0
     )),
-    maxTokens: integer(settings.maxTokens, DEFAULT_SETTINGS.maxTokens, 1),
+    maxTokens,
+    contextWindow,
     timeout: integer(settings.timeout, DEFAULT_SETTINGS.timeout, 1),
     cloudPrivacyAcknowledged: settings.cloudPrivacyAcknowledged === true,
     maxChoices: integer(settings.maxChoices, DEFAULT_SETTINGS.maxChoices, 1),
@@ -185,33 +201,54 @@ export async function saveSettings(
   await setConfig('app_settings', JSON.stringify(persisted));
 }
 
-/**
- * Load API key securely (Tauri: keyring / Web: localStorage)
- */
-export async function loadApiKey(): Promise<string> {
-  if (!isTauriRuntime()) return localStorage.getItem('bio_api_key') ?? '';
+/** Load an API key for exactly one provider/endpoint scope. */
+export async function loadApiKey(
+  provider: LlmProvider,
+  baseUrl: string,
+  migrateLegacy = false
+): Promise<string> {
+  if (!isTauriRuntime()) {
+    return loadWebApiKey(provider, baseUrl, migrateLegacy);
+  }
+  // Desktop requests resolve the secret inside Rust. Never return it to the WebView.
+  return '';
+}
+
+export async function isApiKeyConfigured(
+  provider: LlmProvider,
+  baseUrl: string,
+  migrateLegacy = false
+): Promise<boolean> {
+  if (!isTauriRuntime()) return !!(await loadApiKey(provider, baseUrl, migrateLegacy));
   try {
     const { invoke } = await import('@tauri-apps/api/core');
-    const key = (await invoke('get_api_key')) as string;
-    return key || '';
+    return await invoke<boolean>('has_api_key', { provider, baseUrl, migrateLegacy });
   } catch {
-    throw new Error('无法从系统钥匙串读取 API Key');
+    throw new Error('无法读取系统钥匙串状态');
   }
 }
 
 /**
  * Save API key securely
  */
-export async function saveApiKey(apiKey: string): Promise<void> {
+export async function saveApiKey(
+  apiKey: string,
+  provider: LlmProvider,
+  baseUrl: string
+): Promise<void> {
   if (!isTauriRuntime()) {
     console.warn(
       '[Security] API key stored in localStorage. Use Tauri mode for secure keyring storage.'
     );
-    localStorage.setItem('bio_api_key', apiKey);
+    saveWebApiKey(apiKey, provider, baseUrl);
     return;
   }
   const { invoke } = await import('@tauri-apps/api/core');
-  await invoke('set_api_key', { apiKey });
+  await invoke('set_api_key', { apiKey, provider, baseUrl });
+}
+
+export async function clearApiKey(provider: LlmProvider, baseUrl: string): Promise<void> {
+  await saveApiKey('', provider, baseUrl);
 }
 
 /**
@@ -224,9 +261,18 @@ export async function testConnection(
   provider?: LlmProvider
 ): Promise<boolean> {
   try {
-    await streamChatText(
+    await runtimeLlmGateway.streamText(
       [{ role: 'user', content: '仅回复 OK' }],
-      { provider, apiKey, baseUrl, model, temperature: 0, maxTokens: 8, timeout: 15000 }
+      {
+        provider,
+        apiKey,
+        baseUrl,
+        model,
+        temperature: 0,
+        maxTokens: 8,
+        contextWindow: 4096,
+        timeout: 15000,
+      }
     );
     return true;
   } catch {

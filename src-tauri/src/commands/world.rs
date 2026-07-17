@@ -2,6 +2,7 @@
 
 use serde_json::Value;
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 use tauri::State;
 
@@ -171,6 +172,53 @@ pub async fn save_world(
     }
 
     fs::write(&path, content).map_err(|e| e.to_string())
+}
+
+fn save_world_copy_into_dir(
+    worlds_dir: &std::path::Path,
+    world_name: &str,
+    content: &str,
+) -> Result<String, String> {
+    validate_world_component(world_name)?;
+    fs::create_dir_all(worlds_dir).map_err(|error| error.to_string())?;
+    let canonical_root = worlds_dir
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+
+    for index in 1..=10_000 {
+        let filename = if index == 1 {
+            format!("{world_name}-copy.md")
+        } else {
+            format!("{world_name}-copy-{index}.md")
+        };
+        let path = canonical_root.join(&filename);
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                if let Err(error) = file.write_all(content.as_bytes()) {
+                    drop(file);
+                    let _ = fs::remove_file(&path);
+                    return Err(error.to_string());
+                }
+                return Ok(filename);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Err("Too many world copies with the same name".to_string())
+}
+
+#[tauri::command]
+pub async fn save_world_copy(
+    state: State<'_, AppDb>,
+    world_name: String,
+    content: String,
+) -> Result<String, String> {
+    save_world_copy_into_dir(&get_worlds_dir(&state), &world_name, &content)
 }
 
 #[tauri::command]
@@ -399,6 +447,22 @@ fn format_timestamp(time: &std::time::SystemTime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copied_worlds_use_unique_files_without_overwriting() {
+        let directory =
+            std::env::temp_dir().join(format!("bio_world_copy_{}", uuid::Uuid::new_v4()));
+        let first = save_world_copy_into_dir(&directory, "history", "first").unwrap();
+        let second = save_world_copy_into_dir(&directory, "history", "second").unwrap();
+        assert_eq!(first, "history-copy.md");
+        assert_eq!(second, "history-copy-2.md");
+        assert_eq!(fs::read_to_string(directory.join(first)).unwrap(), "first");
+        assert_eq!(
+            fs::read_to_string(directory.join(second)).unwrap(),
+            "second"
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     // ── Path traversal detection ──────────────────────────────────
 

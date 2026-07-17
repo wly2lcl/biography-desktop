@@ -3,6 +3,7 @@ import { useGameStore } from '@/store/gameStore';
 import ConfirmModal from '@/components/common/ConfirmModal';
 import { getWorldContext, isTauri } from '@/services/world';
 import { getErrorMessage } from '@/utils/errors';
+import { validateWorldDraft, WORLD_TEMPLATE } from '@/services/worldTemplate';
 
 /* ──────────────────────────────────────────────────────────
    Local types — extend store WorldInfo with metadata needed
@@ -114,6 +115,37 @@ export default function WorldManagerScreen() {
       alert(`加载失败，未进入编辑模式: ${getErrorMessage(err, '未知错误')}`);
     }
   }, []);
+
+  const handleCopyBuiltIn = useCallback(async (entry: WorldEntry) => {
+    if (!entry.isBuiltIn || entry.type !== 'single') return;
+    try {
+      const content = await getWorldContext({
+        name: entry.filename,
+        source: 'builtin',
+        type: 'single',
+      });
+      const sourceName = entry.filename.replace(/\.md$/i, '');
+      if (isTauri()) {
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('save_world_copy', { world_name: sourceName, content });
+      } else {
+        const existing = JSON.parse(localStorage.getItem('bio_user_worlds') || '[]') as string[];
+        const occupied = new Set(existing.map((filename) => filename.toLowerCase()));
+        let suffix = 1;
+        let filename = `${sourceName}-copy.md`;
+        while (occupied.has(filename.toLowerCase())
+          || localStorage.getItem(`bio_world_${filename}`) !== null) {
+          suffix += 1;
+          filename = `${sourceName}-copy-${suffix}.md`;
+        }
+        localStorage.setItem(`bio_world_${filename}`, content);
+        localStorage.setItem('bio_user_worlds', JSON.stringify([...existing, filename]));
+      }
+      await loadWorlds();
+    } catch (error) {
+      alert(`复制失败: ${getErrorMessage(error, '未知错误')}`);
+    }
+  }, [loadWorlds]);
 
   // ── New / Edit save ────────────────────────────────
   const handleSaveWorld = useCallback(
@@ -388,6 +420,7 @@ export default function WorldManagerScreen() {
                     key={entry.filename}
                     entry={entry}
                     onPreview={() => handlePreview(entry)}
+                    onCopy={entry.type === 'single' ? () => handleCopyBuiltIn(entry) : null}
                     onEdit={null}
                     onExport={null}
                     onDelete={null}
@@ -428,6 +461,7 @@ export default function WorldManagerScreen() {
                     selected={selectedFilenames.has(entry.filename)}
                     onToggleSelect={() => toggleSelection(entry.filename)}
                     onPreview={() => handlePreview(entry)}
+                    onCopy={null}
                     onEdit={entry.type === 'single' ? () => handleEdit(entry) : null}
                     onExport={() => handleExport(entry)}
                     onDelete={() => setShowDeleteConfirm(entry)}
@@ -502,6 +536,7 @@ function WorldCard({
   selected,
   onToggleSelect,
   onPreview,
+  onCopy,
   onEdit,
   onExport,
   onDelete,
@@ -510,6 +545,7 @@ function WorldCard({
   selected?: boolean;
   onToggleSelect?: () => void;
   onPreview: () => void;
+  onCopy: (() => void) | null;
   onEdit: (() => void) | null;
   onExport: (() => void) | null;
   onDelete: (() => void) | null;
@@ -570,6 +606,15 @@ function WorldCard({
             编辑
           </button>
         )}
+        {onCopy && (
+          <button
+            type="button"
+            onClick={onCopy}
+            className="btn-secondary text-xs py-1 px-2.5"
+          >
+            复制为用户世界
+          </button>
+        )}
         {onExport && (
           <button
             type="button"
@@ -617,13 +662,15 @@ function WorldFormModal({
   onClose: () => void;
 }) {
   const [name, setName] = useState(initial?.name ?? '');
-  const [content, setContent] = useState(initial?.content ?? '');
+  const [content, setContent] = useState(initial?.content ?? WORLD_TEMPLATE);
   const [saving, setSaving] = useState(false);
+  const [showPreview, setShowPreview] = useState(false);
+  const validation = validateWorldDraft(name, content);
 
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault();
-      if (!name.trim()) return;
+      if (validation.errors.length > 0) return;
       setSaving(true);
       try {
         await onSave({ name: name.trim(), content });
@@ -631,7 +678,7 @@ function WorldFormModal({
         setSaving(false);
       }
     },
-    [name, content, onSave],
+    [name, content, onSave, validation.errors.length],
   );
 
   return (
@@ -664,17 +711,38 @@ function WorldFormModal({
             <label htmlFor="world-form-content" className="block text-sm text-gray-300 mb-1.5 font-medium">
               内容 (Markdown)
             </label>
-            <textarea
-              id="world-form-content"
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              placeholder="# 世界设定
+            <div className="flex justify-end mb-2">
+              <button
+                type="button"
+                className="text-xs text-primary-400 hover:text-primary-300"
+                onClick={() => setShowPreview((current) => !current)}
+              >
+                {showPreview ? '返回编辑' : '预览内容'}
+              </button>
+            </div>
+            {showPreview ? (
+              <pre className="input-base min-h-[300px] whitespace-pre-wrap font-mono text-sm leading-relaxed overflow-auto">
+                {content}
+              </pre>
+            ) : (
+              <textarea
+                id="world-form-content"
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                placeholder="# 世界设定
 
 ## 地理
 ..."
-              rows={12}
-              className="input-base resize-none font-mono text-sm leading-relaxed"
-            />
+                rows={16}
+                className="input-base resize-none font-mono text-sm leading-relaxed"
+              />
+            )}
+            {validation.errors.map((error) => (
+              <p key={error} role="alert" className="text-xs text-red-400 mt-1">{error}</p>
+            ))}
+            {validation.warnings.map((warning) => (
+              <p key={warning} className="text-xs text-amber-400 mt-1">{warning}</p>
+            ))}
           </div>
 
           {/* Actions */}
@@ -689,7 +757,7 @@ function WorldFormModal({
             </button>
             <button
               type="submit"
-              disabled={!name.trim() || saving}
+              disabled={validation.errors.length > 0 || saving}
               className="btn-primary text-sm"
             >
               {saving ? '保存中...' : '保存'}

@@ -1,6 +1,6 @@
 // src/services/errorLogger.ts - Lightweight error logging system
 
-interface ErrorLog {
+export interface ErrorLog {
   timestamp: string;
   level: 'error' | 'warn' | 'info';
   message: string;
@@ -10,6 +10,16 @@ interface ErrorLog {
 
 const MAX_LOG_SIZE = 1000; // max entries
 const LOG_KEY = 'bio_error_logs';
+const SAFE_DIAGNOSTIC_MESSAGES = new Set([
+  'startBasicGame failed',
+  'makeChoice failed',
+  'generateBiography failed',
+  'endGame persistence failed',
+  'resumeGame failed',
+  'askQuestion failed',
+  'Unhandled error',
+  'Unhandled promise rejection',
+]);
 
 export const errorLogger = {
   log(level: ErrorLog['level'], message: string, context?: Record<string, unknown>, error?: Error): void {
@@ -61,10 +71,33 @@ export const errorLogger = {
   },
 
   exportLogs(): string {
-    const logs = this.getLogs(1000);
+    const logs = this.getLogs(1000).map((entry) => ({
+      timestamp: entry.timestamp,
+      level: entry.level,
+      message: SAFE_DIAGNOSTIC_MESSAGES.has(entry.message) ? entry.message : '[REDACTED]',
+      context: sanitizeDiagnosticValue(entry.context) as Record<string, unknown> | undefined,
+    }));
     return JSON.stringify(logs, null, 2);
   },
 };
+
+const SENSITIVE_DIAGNOSTIC_KEYS = /api.?key|authorization|secret|password|token|question|content|history|prompt|player.?name|reason/i;
+
+export function sanitizeDiagnosticValue(value: unknown, key = ''): unknown {
+  if (SENSITIVE_DIAGNOSTIC_KEYS.test(key)) return '[REDACTED]';
+  if (typeof value === 'string') return value.length > 500 ? `${value.slice(0, 500)}…` : value;
+  if (Array.isArray(value)) return value.slice(0, 20).map((item) => sanitizeDiagnosticValue(item));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .map(([childKey, childValue]) => [
+          childKey,
+          sanitizeDiagnosticValue(childValue, childKey),
+        ])
+    );
+  }
+  return value;
+}
 
 // Auto-capture unhandled errors
 if (typeof window !== 'undefined') {
