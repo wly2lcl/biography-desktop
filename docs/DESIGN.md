@@ -330,7 +330,7 @@ interface WorldRef {
 
 ### 17.5 发布门禁
 
-Pull Request 必须通过 TypeScript 构建、Vitest、覆盖率、Rust fmt、Clippy 与 Rust tests。正式 Release 仅在 Windows x64、macOS Intel/Apple Silicon、Linux x64 全部成功且签名策略满足时创建。Release 调用可复用质量工作流时必须显式跳过其桌面构建，只由 Release 自己执行一次四目标矩阵；不得依据被调用工作流的 `github.event_name` 判断调用方式，因为该上下文继承调用方事件。tag push 与手动稳定发布使用同一套签名凭据判定；Windows 稳定签名必须同时配置证书、SHA-256 和证书颁发方提供的时间戳 URL。签名不完整时只能创建 draft/prerelease。Apple 签名与公证环境变量只能注入已确认凭据完整的 macOS 签名步骤；未签名 macOS 构建必须完全省略这些变量，不能用空字符串占位，否则 Tauri 会把空 identity 解释为签名请求并调用 `codesign --sign ""`。Release 标签/手动版本必须与 `package.json`、Tauri 配置和 Cargo 包版本一致，禁止用新标签发布旧版本安装包。手动工作流创建尚不存在的标签时必须将 `target_commitish` 固定为本次工作流的 `github.sha`；如果同名轻量或附注标签已经存在，必须在构建前解析其最终提交并验证与 `github.sha` 相同，不一致时终止发布，避免把当前提交的安装包挂到另一个提交的标签下。
+Pull Request 必须通过 TypeScript 构建、Vitest、覆盖率、Rust fmt、Clippy 与 Rust tests。正式 Release 仅在 Windows x64、macOS Intel/Apple Silicon、Linux x64 全部成功且签名策略满足时创建。Release 调用可复用质量工作流时必须显式跳过其桌面构建，只由 Release 自己执行一次四目标矩阵；不得依据被调用工作流的 `github.event_name` 判断调用方式，因为该上下文继承调用方事件。tag push 与手动稳定发布使用同一套签名凭据判定。Apple 与 Windows 的凭据完整性必须独立计算：Apple 凭据齐全时 macOS 产物应签名并公证，即使 Windows 凭据不足导致整个 Release 仍为 draft/prerelease；Windows 凭据齐全时同理生成已签名 Windows 产物。只有请求稳定发布且两组凭据都完整时，Release 才可成为正式稳定版。Windows 签名必须同时配置证书、SHA-256 和证书颁发方提供的时间戳 URL。Apple 签名与公证环境变量只能注入已确认 Apple 凭据完整的 macOS 签名步骤；未签名 macOS 构建必须完全省略这些变量，不能用空字符串占位，否则 Tauri 会把空 identity 解释为签名请求并调用 `codesign --sign ""`。Release 标签/手动版本必须与 `package.json`、Tauri 配置和 Cargo 包版本一致，禁止用新标签发布旧版本安装包。手动工作流创建尚不存在的标签时必须将 `target_commitish` 固定为本次工作流的 `github.sha`；如果同名轻量或附注标签已经存在，必须在构建前解析其最终提交并验证与 `github.sha` 相同，不一致时终止发布，避免把当前提交的安装包挂到另一个提交的标签下。
 
 ### 4.2 数据库表（SQLite）
 
@@ -2226,7 +2226,7 @@ npm run tauri build  # → src-tauri/target/release/bundle/
 
 - 错误状态使用 `AppError`，只有绑定了真实 `retryAction` 的错误才显示重试按钮。
 - Rust 初始化失败不得 panic 退出；原生层把启动错误传给前端恢复页，允许查看诊断、打开数据目录或明确进入临时内存模式。
-- 正式发布必须经过四目标构建、Windows 签名、macOS 签名与公证；缺少凭据只能生成 draft/prerelease。
+- 正式发布必须经过四目标构建、Windows 签名、macOS 签名与公证；缺少任一平台凭据时只能生成 draft/prerelease，但凭据完整的平台仍应生成可独立验收的签名产物。
 - 应用内提供版本与更新入口。更新检查失败不阻塞启动，也不上传剧情、世界观或 API Key。
 - 首版继续采用 BYOK，无账号、云同步、计费和业务后端。
 

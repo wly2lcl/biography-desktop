@@ -31,21 +31,33 @@ if [[ "$tag" != "$expected_tag" ]]; then
   exit 1
 fi
 
-signed=false
-if [[ "$request_stable" == "true" \
-  && -n "${APPLE_CERTIFICATE:-}" \
+apple_signed=false
+if [[ -n "${APPLE_CERTIFICATE:-}" \
   && -n "${APPLE_CERTIFICATE_PASSWORD:-}" \
   && -n "${APPLE_SIGNING_IDENTITY:-}" \
   && -n "${APPLE_ID:-}" \
   && -n "${APPLE_PASSWORD:-}" \
-  && -n "${APPLE_TEAM_ID:-}" \
-  && -n "${WINDOWS_CERTIFICATE:-}" \
+  && -n "${APPLE_TEAM_ID:-}" ]]; then
+  apple_signed=true
+fi
+
+windows_signed=false
+if [[ -n "${WINDOWS_CERTIFICATE:-}" \
   && -n "${WINDOWS_CERTIFICATE_PASSWORD:-}" \
   && -n "${WINDOWS_CERTIFICATE_THUMBPRINT:-}" \
   && -n "${WINDOWS_TIMESTAMP_URL:-}" ]]; then
+  windows_signed=true
+fi
+
+signed=false
+if [[ "$request_stable" == "true" \
+  && "$apple_signed" == "true" \
+  && "$windows_signed" == "true" ]]; then
   signed=true
 fi
 
 output="${GITHUB_OUTPUT:-/dev/stdout}"
 printf 'tag=%s\n' "$tag" >> "$output"
+printf 'apple_signed=%s\n' "$apple_signed" >> "$output"
+printf 'windows_signed=%s\n' "$windows_signed" >> "$output"
 printf 'signed=%s\n' "$signed" >> "$output"

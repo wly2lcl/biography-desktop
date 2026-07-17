@@ -94,6 +94,9 @@ function workflowStep(name) {
 }
 
 const signedMacBuildStep = workflowStep('Build signed macOS package');
+const signedWindowsBuildStep = workflowStep('Build signed Windows package');
+const importAppleCertificateStep = workflowStep('Import Apple signing certificate');
+const importWindowsCertificateStep = workflowStep('Import Windows signing certificate');
 const unsignedBuildStep = workflowStep('Build Linux or unsigned package');
 const appleSigningVariables = [
   'APPLE_SIGNING_IDENTITY',
@@ -101,13 +104,24 @@ const appleSigningVariables = [
   'APPLE_PASSWORD',
   'APPLE_TEAM_ID',
 ];
-if (!signedMacBuildStep.includes("if: runner.os == 'macOS' && needs.metadata.outputs.signed == 'true'")
+if (!signedMacBuildStep.includes("if: runner.os == 'macOS' && needs.metadata.outputs.apple_signed == 'true'")
+  || !importAppleCertificateStep.includes("if: runner.os == 'macOS' && needs.metadata.outputs.apple_signed == 'true'")
   || !appleSigningVariables.every((variable) => signedMacBuildStep.includes(`${variable}:`))) {
   throw new Error('Signed macOS builds must exclusively receive all Apple signing variables');
 }
-if (!unsignedBuildStep.includes("if: runner.os == 'Linux' || needs.metadata.outputs.signed != 'true'")
+if (!signedWindowsBuildStep.includes("if: runner.os == 'Windows' && needs.metadata.outputs.windows_signed == 'true'")
+  || !importWindowsCertificateStep.includes("if: runner.os == 'Windows' && needs.metadata.outputs.windows_signed == 'true'")) {
+  throw new Error('Signed Windows builds must depend only on complete Windows signing credentials');
+}
+if (!unsignedBuildStep.includes("if: runner.os == 'Linux' || (runner.os == 'macOS' && needs.metadata.outputs.apple_signed != 'true') || (runner.os == 'Windows' && needs.metadata.outputs.windows_signed != 'true')")
   || appleSigningVariables.some((variable) => unsignedBuildStep.includes(`${variable}:`))) {
   throw new Error('Unsigned builds must omit Apple signing variables instead of assigning empty values');
+}
+if (!releaseWorkflow.includes('apple_signed: ${{ steps.release.outputs.apple_signed }}')
+  || !releaseWorkflow.includes('windows_signed: ${{ steps.release.outputs.windows_signed }}')
+  || !releaseWorkflow.includes("draft: ${{ needs.metadata.outputs.signed != 'true' }}")
+  || !releaseWorkflow.includes("prerelease: ${{ needs.metadata.outputs.signed != 'true' }}")) {
+  throw new Error('Platform signing readiness must be independent while stable release gating remains global');
 }
 if (!releaseWorkflow.includes('skip_desktop_build: true')
   || !ciWorkflow.includes("if: ${{ inputs.skip_desktop_build != true }}")

@@ -99,3 +99,10 @@ For distribution outside your own machine, macOS apps must be signed and notariz
 
 GitHub Actions workflow is configured at `.github/workflows/release.yml`.
 Triggered by git tags (`v*`) or manual workflow dispatch.
+
+Apple and Windows signing readiness are evaluated independently. Complete Apple
+credentials produce signed and notarized macOS artifacts even when the Release
+must remain a draft/prerelease because Windows credentials are missing, and vice
+versa. A stable Release still requires both signing sets plus an explicit stable
+request. Unsigned macOS artifacts are suitable only for development testing and
+may be blocked by Gatekeeper after download.

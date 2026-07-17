@@ -26,6 +26,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.release.outputs.tag }}
+      apple_signed: ${{ steps.release.outputs.apple_signed }}
+      windows_signed: ${{ steps.release.outputs.windows_signed }}
       signed: ${{ steps.release.outputs.signed }}
     steps:
       - uses: actions/checkout@v4
@@ -93,13 +95,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential curl wget file libxdo-dev libssl-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev rpm
       - name: Import Apple signing certificate
-        if: runner.os == 'macOS' && needs.metadata.outputs.signed == 'true'
+        if: runner.os == 'macOS' && needs.metadata.outputs.apple_signed == 'true'
         uses: apple-actions/import-codesign-certs@v3
         with:
           p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
           p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
       - name: Import Windows signing certificate
-        if: runner.os == 'Windows' && needs.metadata.outputs.signed == 'true'
+        if: runner.os == 'Windows' && needs.metadata.outputs.windows_signed == 'true'
         shell: pwsh
         env:
           CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
@@ -109,7 +111,7 @@ jobs:
           Import-PfxCertificate -FilePath certificate.pfx -CertStoreLocation Cert:\CurrentUser\My -Password (ConvertTo-SecureString $env:CERTIFICATE_PASSWORD -AsPlainText -Force)
       - run: npm ci
       - name: Build signed Windows package
-        if: runner.os == 'Windows' && needs.metadata.outputs.signed == 'true'
+        if: runner.os == 'Windows' && needs.metadata.outputs.windows_signed == 'true'
         shell: pwsh
         env:
           CERTIFICATE_THUMBPRINT: ${{ secrets.WINDOWS_CERTIFICATE_THUMBPRINT }}
@@ -118,7 +120,7 @@ jobs:
           $config = @{ bundle = @{ windows = @{ certificateThumbprint = $env:CERTIFICATE_THUMBPRINT; digestAlgorithm = 'sha256'; timestampUrl = $env:TIMESTAMP_URL } } } | ConvertTo-Json -Depth 4 -Compress
           npm exec tauri -- build --target ${{ matrix.target }} --config $config
       - name: Build signed macOS package
-        if: runner.os == 'macOS' && needs.metadata.outputs.signed == 'true'
+        if: runner.os == 'macOS' && needs.metadata.outputs.apple_signed == 'true'
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -126,7 +128,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npm exec tauri -- build --target ${{ matrix.target }}
       - name: Build Linux or unsigned package
-        if: runner.os == 'Linux' || needs.metadata.outputs.signed != 'true'
+        if: runner.os == 'Linux' || (runner.os == 'macOS' && needs.metadata.outputs.apple_signed != 'true') || (runner.os == 'Windows' && needs.metadata.outputs.windows_signed != 'true')
         run: npm exec tauri -- build --target ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
