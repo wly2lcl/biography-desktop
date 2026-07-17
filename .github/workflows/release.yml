@@ -117,13 +117,16 @@ jobs:
         run: |
           $config = @{ bundle = @{ windows = @{ certificateThumbprint = $env:CERTIFICATE_THUMBPRINT; digestAlgorithm = 'sha256'; timestampUrl = $env:TIMESTAMP_URL } } } | ConvertTo-Json -Depth 4 -Compress
           npm exec tauri -- build --target ${{ matrix.target }} --config $config
-      - name: Build macOS, Linux, or unsigned package
-        if: runner.os != 'Windows' || needs.metadata.outputs.signed != 'true'
+      - name: Build signed macOS package
+        if: runner.os == 'macOS' && needs.metadata.outputs.signed == 'true'
         env:
-          APPLE_SIGNING_IDENTITY: ${{ needs.metadata.outputs.signed == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
-          APPLE_ID: ${{ needs.metadata.outputs.signed == 'true' && secrets.APPLE_ID || '' }}
-          APPLE_PASSWORD: ${{ needs.metadata.outputs.signed == 'true' && secrets.APPLE_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ needs.metadata.outputs.signed == 'true' && secrets.APPLE_TEAM_ID || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npm exec tauri -- build --target ${{ matrix.target }}
+      - name: Build Linux or unsigned package
+        if: runner.os == 'Linux' || needs.metadata.outputs.signed != 'true'
         run: npm exec tauri -- build --target ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:

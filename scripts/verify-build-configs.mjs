@@ -77,6 +77,38 @@ if (!releaseWorkflow.includes('WINDOWS_TIMESTAMP_URL')
   || !releaseWorkflow.includes('timestampUrl = $env:TIMESTAMP_URL')) {
   throw new Error('Stable Windows signing must require SHA-256 and a timestamp URL');
 }
+
+function workflowStep(name) {
+  const marker = `      - name: ${name}\n`;
+  const start = releaseWorkflow.indexOf(marker);
+  if (start === -1) {
+    throw new Error(`Release workflow step is missing: ${name}`);
+  }
+
+  const followingSteps = [
+    releaseWorkflow.indexOf('\n      - name:', start + marker.length),
+    releaseWorkflow.indexOf('\n      - uses:', start + marker.length),
+  ].filter((index) => index !== -1);
+  const end = followingSteps.length > 0 ? Math.min(...followingSteps) : releaseWorkflow.length;
+  return releaseWorkflow.slice(start, end);
+}
+
+const signedMacBuildStep = workflowStep('Build signed macOS package');
+const unsignedBuildStep = workflowStep('Build Linux or unsigned package');
+const appleSigningVariables = [
+  'APPLE_SIGNING_IDENTITY',
+  'APPLE_ID',
+  'APPLE_PASSWORD',
+  'APPLE_TEAM_ID',
+];
+if (!signedMacBuildStep.includes("if: runner.os == 'macOS' && needs.metadata.outputs.signed == 'true'")
+  || !appleSigningVariables.every((variable) => signedMacBuildStep.includes(`${variable}:`))) {
+  throw new Error('Signed macOS builds must exclusively receive all Apple signing variables');
+}
+if (!unsignedBuildStep.includes("if: runner.os == 'Linux' || needs.metadata.outputs.signed != 'true'")
+  || appleSigningVariables.some((variable) => unsignedBuildStep.includes(`${variable}:`))) {
+  throw new Error('Unsigned builds must omit Apple signing variables instead of assigning empty values');
+}
 if (!releaseWorkflow.includes('skip_desktop_build: true')
   || !ciWorkflow.includes("if: ${{ inputs.skip_desktop_build != true }}")
   || ciWorkflow.includes("github.event_name != 'workflow_call'")) {
