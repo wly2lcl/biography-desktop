@@ -97,7 +97,7 @@ export default {
 ```json
 {
   "productName": "传记生成器",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "com.biography.generator",
   "build": {
     "beforeDevCommand": "npm run dev",

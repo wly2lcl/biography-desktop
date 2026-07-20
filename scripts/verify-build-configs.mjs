@@ -141,6 +141,11 @@ if (!releaseWorkflow.includes('fetch-depth: 0')
   throw new Error('Release metadata must receive the selected commit and complete tag history');
 }
 const releaseMetadataScript = readFileSync('scripts/release-metadata.sh', 'utf8');
+if (releaseWorkflow.includes('INPUT_VERSION:')
+  || releaseWorkflow.includes('inputs.version')
+  || !releaseMetadataScript.includes('tag="$expected_tag"')) {
+  throw new Error('Manual releases must derive their tag from the committed manifest version');
+}
 if (!releaseMetadataScript.includes('git show-ref --verify --quiet "refs/tags/${tag}"')
   || !releaseMetadataScript.includes('git rev-parse "${tag}^{commit}"')
   || !releaseMetadataScript.includes('resolved_tag_commit" != "$resolved_workflow_commit')) {

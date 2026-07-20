@@ -8,10 +8,6 @@ on:
     tags: ['v*']
   workflow_dispatch:
     inputs:
-      version:
-        description: Version number (for example 0.2.0)
-        required: true
-        default: 0.1.0
       stable:
         description: Request a signed stable release
         type: boolean
@@ -41,7 +37,6 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
           GITHUB_SHA: ${{ github.sha }}
-          INPUT_VERSION: ${{ inputs.version }}
           INPUT_STABLE: ${{ inputs.stable }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}

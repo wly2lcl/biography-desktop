@@ -13,7 +13,7 @@ export default defineConfig(async ({ mode }) => {
   return {
     plugins: [react()],
     define: {
-      'import.meta.env.VITE_APP_VERSION': JSON.stringify(process.env.npm_package_version || '0.1.0'),
+      'import.meta.env.VITE_APP_VERSION': JSON.stringify(process.env.npm_package_version || '0.1.1'),
     },
     resolve: {
       alias: [

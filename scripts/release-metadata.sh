@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+manifest_version="${PACKAGE_VERSION:-$(node -p "require('./package.json').version")}"
+expected_tag="v${manifest_version}"
+
 if [[ "${EVENT_NAME:-}" == "push" ]]; then
   tag="${REF_NAME:?REF_NAME is required for tag pushes}"
   request_stable=true
 else
-  tag="v${INPUT_VERSION:?INPUT_VERSION is required for manual releases}"
+  tag="$expected_tag"
   request_stable="${INPUT_STABLE:-false}"
   workflow_commit="${GITHUB_SHA:?GITHUB_SHA is required for manual releases}"
 
@@ -24,8 +27,6 @@ else
   fi
 fi
 
-manifest_version="${PACKAGE_VERSION:-$(node -p "require('./package.json').version")}"
-expected_tag="v${manifest_version}"
 if [[ "$tag" != "$expected_tag" ]]; then
   printf 'Release tag %s does not match manifest version %s\n' "$tag" "$manifest_version" >&2
   exit 1

@@ -1,6 +1,6 @@
 [package]
 name = "biography-desktop"
-version = "0.1.0"
+version = "0.1.1"
 description = "LLM-driven interactive biographical narrative desktop app"
 authors = []
 edition = "2021"

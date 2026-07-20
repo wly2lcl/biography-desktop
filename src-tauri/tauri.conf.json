@@ -1,6 +1,6 @@
 {
   "productName": "BiographyDesktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "com.biography.generator",
   "build": {
     "beforeDevCommand": "npm run dev",

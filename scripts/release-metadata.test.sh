@@ -98,7 +98,8 @@ git init -q "$test_repo"
 git -C "$test_repo" config user.name "Release Test"
 git -C "$test_repo" config user.email "release-test@example.com"
 printf 'first\n' > "$test_repo/release.txt"
-git -C "$test_repo" add release.txt
+printf '{"version":"2.0.0"}\n' > "$test_repo/package.json"
+git -C "$test_repo" add release.txt package.json
 git -C "$test_repo" commit -qm "first"
 first_commit="$(git -C "$test_repo" rev-parse HEAD)"
 printf 'second\n' > "$test_repo/release.txt"
@@ -110,8 +111,6 @@ manual_output="$temp_dir/manual-output"
   cd "$test_repo"
   env \
     EVENT_NAME=workflow_dispatch \
-    INPUT_VERSION=2.0.0 \
-    PACKAGE_VERSION=2.0.0 \
     INPUT_STABLE=false \
     GITHUB_SHA="$second_commit" \
     GITHUB_OUTPUT="$manual_output" \
@@ -124,7 +123,6 @@ manual_signed_artifacts_output="$temp_dir/manual-signed-artifacts-output"
   cd "$test_repo"
   env \
     EVENT_NAME=workflow_dispatch \
-    INPUT_VERSION=2.0.0 \
     PACKAGE_VERSION=2.0.0 \
     INPUT_STABLE=false \
     GITHUB_SHA="$second_commit" \
@@ -149,7 +147,6 @@ lightweight_output="$temp_dir/lightweight-output"
   cd "$test_repo"
   env \
     EVENT_NAME=workflow_dispatch \
-    INPUT_VERSION=2.0.1 \
     PACKAGE_VERSION=2.0.1 \
     INPUT_STABLE=false \
     GITHUB_SHA="$second_commit" \
@@ -164,7 +161,6 @@ annotated_output="$temp_dir/annotated-output"
   cd "$test_repo"
   env \
     EVENT_NAME=workflow_dispatch \
-    INPUT_VERSION=2.0.2 \
     PACKAGE_VERSION=2.0.2 \
     INPUT_STABLE=false \
     GITHUB_SHA="$second_commit" \
@@ -178,7 +174,6 @@ if (
   cd "$test_repo"
   env \
     EVENT_NAME=workflow_dispatch \
-    INPUT_VERSION=2.0.3 \
     PACKAGE_VERSION=2.0.3 \
     INPUT_STABLE=false \
     GITHUB_SHA="$second_commit" \

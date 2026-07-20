@@ -1,7 +1,7 @@
 # Biography Desktop - 详细设计文档
 
 > 从 Python/FastAPI Web 应用迁移为 Tauri + TypeScript 桌面应用
-> 应用版本: 0.1.0 | 文档最后更新: 2026-07-17
+> 应用版本: 0.1.1 | 文档最后更新: 2026-07-20
 
 ---
 
@@ -2191,7 +2191,7 @@ npm run tauri build  # → src-tauri/target/release/bundle/
 ```json
 {
   "productName": "BiographyDesktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "com.biography.generator",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -2227,6 +2227,7 @@ npm run tauri build  # → src-tauri/target/release/bundle/
 - 错误状态使用 `AppError`，只有绑定了真实 `retryAction` 的错误才显示重试按钮。
 - Rust 初始化失败不得 panic 退出；原生层把启动错误传给前端恢复页，允许查看诊断、打开数据目录或明确进入临时内存模式。
 - 正式发布必须经过四目标构建、Windows 签名、macOS 签名与公证；缺少任一平台凭据时只能生成 draft/prerelease，但凭据完整的平台仍应生成可独立验收的签名产物。
+- 手动 Release 不接受独立版本输入，必须从已提交的 `package.json` 自动推导 `v<version>`，并验证 Tauri/Cargo 清单一致；既有标签若指向其他提交必须在构建前失败，禁止工作流临时修改版本后发布不可复现产物。
 - 应用内提供版本与更新入口。更新检查失败不阻塞启动，也不上传剧情、世界观或 API Key。
 - 首版继续采用 BYOK，无账号、云同步、计费和业务后端。
 

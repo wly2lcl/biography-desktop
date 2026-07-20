@@ -6,7 +6,7 @@ export function buildDiagnosticBundle(settings: AppSettings): string {
   return JSON.stringify({
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
-    appVersion: import.meta.env.VITE_APP_VERSION || '0.1.0',
+    appVersion: import.meta.env.VITE_APP_VERSION || '0.1.1',
     runtime: {
       platform: navigator.platform,
       language: navigator.language,
